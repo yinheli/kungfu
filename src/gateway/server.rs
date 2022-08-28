@@ -119,6 +119,7 @@ impl Gateway {
 
         #[cfg(target_os = "macos")]
         {
+            use log::debug;
             use std::thread::sleep;
             use std::time::Duration;
             // wait dev setup
