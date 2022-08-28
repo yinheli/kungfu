@@ -12,8 +12,7 @@ network: 10.89.0.1/16
 proxy:
   - name: hk
     values:
-      # - socks5://127.0.0.1:1082
-      - socks5://192.168.4.10:1082
+      - socks5://127.0.0.1:1082
   - name: jp
     values:
       - socks5://127.0.0.1:1084

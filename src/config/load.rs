@@ -1,7 +1,7 @@
 use super::hosts::Hosts;
 use super::setting::{Rule, Setting};
 use crate::{cli::Cli, config::DnsTable};
-use anyhow::Error;
+use anyhow::{anyhow, Error};
 use ipnet::IpNet;
 use log::{debug, error, info};
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
@@ -160,6 +160,14 @@ fn test_setting(setting: ArcSetting) -> Result<(), Error> {
     let network = IpNet::from_str(&setting.network);
     assert!(network.is_ok());
     assert!(network.unwrap().hosts().count() > 1022);
+
+    if !setting.proxy.is_empty() {
+        for p in setting.proxy.iter() {
+            if p.values.iter().any(|v| !v.starts_with("socks5://")) {
+                return Err(anyhow!("proxy only support socks5"));
+            }
+        }
+    }
 
     assert!(!setting.dns_upstream.is_empty());
 
