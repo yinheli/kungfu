@@ -1,0 +1,119 @@
+name: Create release and upload binaries
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]*"
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  github_build:
+    name: Build release binaries
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: kungfu-x86_64-unknown-linux-musl.tar.gz
+
+          - target: i686-unknown-linux-musl
+            os: ubuntu-latest
+            name: kungfu-i686-unknown-linux-musl.tar.gz
+
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            name: kungfu-aarch64-unknown-linux-musl.tar.gz
+
+          - target: arm-unknown-linux-musleabihf
+            os: ubuntu-latest
+            name: kungfu-arm-unknown-linux-musleabihf.tar.gz
+
+          - target: mips-unknown-linux-musl
+            os: ubuntu-latest
+            name: kungfu-mips-unknown-linux-musl.tar.gz
+
+          - target: mipsel-unknown-linux-musl
+            os: ubuntu-latest
+            name: kungfu-mipsel-unknown-linux-musl.tar.gz
+
+          - target: x86_64-apple-darwin
+            os: macOS-11
+            name: kungfu-x86_64-apple-darwin.tar.gz
+
+          - target: aarch64-apple-darwin
+            os: macOS-11
+            name: kungfu-aarch64-apple-darwin.tar.gz
+
+          # not supported yet
+          # - target: x86_64-pc-windows-msvc
+          #   os: windows-latest
+          #   name: kungfu-x86_64-pc-windows-msvc.zip
+
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup | Rust
+        uses: actions-rs/toolchain@v1.0.7
+        with:
+          toolchain: nightly
+          override: true
+          profile: minimal
+          target: ${{ matrix.target }}
+
+      - name: Build | Build
+        uses: actions-rs/cargo@v1.0.3
+        with:
+          command: build
+          args: --release --locked --target ${{ matrix.target }}
+          use-cross: ${{ matrix.os == 'ubuntu-latest' }}
+
+      - name: Post Build | Prepare artifacts [Windows]
+        if: matrix.os == 'windows-latest'
+        run: |
+          xcopy config README.md target/${{ matrix.target }}/release /e /y
+          cd target/${{ matrix.target }}/release
+          7z a ../../../${{ matrix.name }} kungfu.exe config README.md
+          cd -
+      - name: Post Build | Prepare artifacts [-nix]
+        if: matrix.os != 'windows-latest'
+        run: |
+          cp -r config README.md target/${{ matrix.target }}/release
+          cd target/${{ matrix.target }}/release
+          tar czvf ../../../${{ matrix.name }} kungfu config README.md
+          cd -
+      - name: Deploy | Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+  upload_artifacts:
+    name: Add Build Artifacts to Release
+    needs: [github_build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup | Artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Setup | Checksums
+        run: for file in kungfu-*/kungfu-*; do openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256"; done
+
+      - name: Build | Add Artifacts to Release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: kungfu-*/kungfu-*
