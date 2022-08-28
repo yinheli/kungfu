@@ -3,7 +3,8 @@ name = "kungfu"
 version = "0.1.0"
 edition = "2021"
 authors = ["yinheli <me@yinheli.com>"]
-keywords = ["dns", "gfw", "proxy"]
+keywords = ["dns", "proxy"]
+license = "MIT"
 description = "Flexible DNS hijacking and proxy tool. Read more: https://github.com/yinheli/kungfu"
 repository = "https://github.com/yinheli/kungfu"
 
