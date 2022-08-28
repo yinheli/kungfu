@@ -97,8 +97,10 @@ impl Gateway {
         info!("gateway addr: {}", self.network.addr());
         let mut config = tun::Configuration::default();
         config
+            .layer(tun::Layer::L3)
             .address(self.network.addr())
-            .broadcast(self.network.broadcast())
+            .destination(self.gateway)
+            .netmask(self.network.netmask())
             .up();
 
         #[cfg(target_os = "linux")]
