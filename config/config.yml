@@ -1,0 +1,19 @@
+# default 53
+dns_port: 53
+
+# upstream DNS servers
+dns_upstream:
+  - 1.2.4.8
+  - 114.114.114.114
+
+# hijack address pool
+network: 10.89.0.1/16
+
+proxy:
+  - name: hk
+    values:
+      # - socks5://127.0.0.1:1082
+      - socks5://192.168.4.10:1082
+  - name: jp
+    values:
+      - socks5://127.0.0.1:1084
