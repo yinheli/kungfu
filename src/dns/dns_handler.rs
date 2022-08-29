@@ -97,6 +97,10 @@ impl DnsHandler {
                 .collect::<Vec<_>>()
         };
 
+        if rules.is_empty() {
+            return None;
+        }
+
         let records = records.iter().cloned().collect::<Vec<_>>();
 
         let ips = records
