@@ -45,7 +45,7 @@ nu-pretty-hex = "0.67"
 
 
 [profile.release]
-opt-level = 'z'
+opt-level = 3
 lto = true
 strip = true
 codegen-units = 1

@@ -39,8 +39,8 @@ impl DnsTable {
         let pool_size = hosts.count();
 
         Self {
-            domain: LruCache::new(pool_size),
-            addr: LruCache::new(pool_size),
+            domain: LruCache::new(10000),
+            addr: LruCache::new(10000),
             network,
             pool_size,
             offset: 0,
