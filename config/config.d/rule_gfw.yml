@@ -24,8 +24,6 @@
   values:
     - 39.156.69.79/32
     - 220.181.38.148/32
-    - 182.61.200.6/24
-    - 39.156.66.10/32
 
 # upstream IP GEO
 # base https://dev.maxmind.com/geoip/geoip2/geolite2
