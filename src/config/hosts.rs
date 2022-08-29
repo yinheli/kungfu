@@ -31,6 +31,10 @@ impl Hosts {
     }
 
     pub fn match_domain(&self, domain: &str) -> Option<String> {
+        if self.0.is_empty() {
+            return None;
+        }
+
         self.0.par_iter().find_map_first(|v| {
             if v.1.matches(domain) {
                 return Some(v.0.to_string());
