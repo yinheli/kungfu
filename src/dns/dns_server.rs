@@ -1,6 +1,6 @@
 use anyhow::Error;
 use std::{net::IpAddr, sync::Arc, time::Duration};
-use tokio::net::UdpSocket;
+use tokio::net::{TcpListener, UdpSocket};
 use trust_dns_server::{
     authority::{
         AuthorityObject, Catalog, LookupError, LookupObject, LookupOptions, MessageRequest,
@@ -53,10 +53,12 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
     catalog.upsert(LowerName::from(Name::root()), Box::new(authority));
 
     let mut server = ServerFuture::new(Handler { catalog });
-    let dns_addr = format!("0.0.0.0:{}", setting.dns_port);
-    log::info!("dns listen: {}", dns_addr);
-    let socket = UdpSocket::bind(dns_addr).await?;
-    server.register_socket(socket);
+    log::info!("dns listen port: {}", setting.dns_port);
+    server.register_socket(UdpSocket::bind(format!("0.0.0.0:{}", setting.dns_port)).await?);
+    server.register_listener(
+        TcpListener::bind(format!("0.0.0.0:{}", setting.dns_port)).await?,
+        Duration::from_secs(5),
+    );
 
     Ok(server)
 }
