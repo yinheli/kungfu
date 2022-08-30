@@ -1,6 +1,6 @@
 use ipnet::IpNet;
-use lazy_static::__Deref;
 use lru::LruCache;
+use std::ops::Deref;
 use std::{
     net::{IpAddr, Ipv4Addr},
     str::FromStr,

@@ -19,6 +19,7 @@ pub(crate) fn init(cli: &cli::Cli) {
                 record.args()
             )
         })
+        // .filter_level(level)
         .filter_module("kungfu", level)
         .init();
 }
