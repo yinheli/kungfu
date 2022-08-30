@@ -19,7 +19,7 @@ pub struct Setting {
     pub hosts_match: RwLock<Hosts>,
 
     #[serde(skip_serializing, skip_deserializing)]
-    pub dns_table: RwLock<DnsTable>,
+    pub dns_table: DnsTable,
 }
 
 impl Default for Setting {

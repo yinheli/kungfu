@@ -1,35 +1,51 @@
 use ipnet::IpNet;
+use lazy_static::__Deref;
 use lru::LruCache;
-use std::{net::IpAddr, str::FromStr};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    str::FromStr,
+    sync::{Mutex, RwLock},
+};
+use trust_dns_server::{
+    authority::LookupObject,
+    proto::rr::{rdata::TXT, RData, Record},
+    resolver::Name,
+};
 
 #[derive(Debug)]
 pub struct DnsTable {
-    domain: LruCache<String, Addr>,
-    addr: LruCache<IpAddr, Addr>,
+    domain: RwLock<LruCache<String, Option<Addr>>>,
+    addr: RwLock<LruCache<IpAddr, Addr>>,
     network: IpNet,
+    gateway: IpAddr,
     pool_size: usize,
-    offset: usize,
+    offset: Mutex<usize>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Addr {
     pub domain: String,
-    pub ip: IpAddr,
+    pub ip: Option<IpAddr>,
     pub target: String,
     pub remark: String,
+
+    records: Vec<Record>,
 }
 
 impl Default for DnsTable {
     fn default() -> Self {
         Self {
-            domain: LruCache::new(0),
-            addr: LruCache::new(0),
+            domain: RwLock::new(LruCache::new(0)),
+            addr: RwLock::new(LruCache::new(0)),
             network: Default::default(),
+            gateway: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             pool_size: Default::default(),
             offset: Default::default(),
         }
     }
 }
+
+const DNS_CACHE_SIZE: usize = 5000;
 
 impl DnsTable {
     pub fn new(network: &str) -> Self {
@@ -39,58 +55,117 @@ impl DnsTable {
         let pool_size = hosts.count();
 
         Self {
-            domain: LruCache::new(10000),
-            addr: LruCache::new(10000),
+            domain: RwLock::new(LruCache::new(DNS_CACHE_SIZE)),
+            addr: RwLock::new(LruCache::new(DNS_CACHE_SIZE)),
             network,
+            gateway: network.addr(),
             pool_size,
-            offset: 0,
+            offset: Mutex::new(0),
         }
     }
 
     /// apply domain addr
-    pub fn apply(&mut self, domain: &str, target: &str, remark: &str) -> Addr {
-        if self.domain.contains(domain) {
-            let addr = self.domain.peek(domain).unwrap().clone();
-            return addr;
-        }
+    pub fn apply(&self, domain: &str, target: &str, remark: &str) -> Addr {
+        let ip = self.allocate_addr();
+        let addr = Addr::new(domain, Some(ip), target, remark);
 
-        let addr = Addr {
-            domain: domain.to_string(),
-            ip: self.allocation_addr(),
-            target: target.to_string(),
-            remark: remark.to_string(),
-        };
-
-        self.domain.put(domain.to_string(), addr.clone());
-        self.addr.put(addr.ip, addr.clone());
+        self.domain
+            .write()
+            .unwrap()
+            .put(domain.to_string(), Some(addr.clone()));
+        self.addr.write().unwrap().put(ip, addr.clone());
 
         addr
     }
 
     /// find addr by ip
-    pub fn find(&self, ip: &IpAddr) -> Option<Addr> {
-        self.addr.peek(ip).cloned()
+    pub fn find_by_ip(&self, ip: &IpAddr) -> Option<Addr> {
+        self.addr.read().unwrap().peek(ip).cloned()
     }
 
-    pub fn clear(&mut self) {
-        self.domain.clear();
-        self.addr.clear();
-        self.offset = 0;
+    pub fn find_by_domain(&self, domain: &str) -> Option<Option<Addr>> {
+        let addr = self.domain.read().unwrap().peek(domain).cloned();
+        if addr.is_none() {
+            self.domain.write().unwrap().put(domain.to_string(), None);
+        }
+        addr
     }
 
-    fn allocation_addr(&mut self) -> IpAddr {
+    pub fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Addr {
+        let addr = Addr::new(domain, ip, "", remark);
+        self.domain
+            .write()
+            .unwrap()
+            .put(domain.to_string(), Some(addr.clone()));
+        addr
+    }
+
+    pub fn clear(&self) {
+        self.domain.write().unwrap().clear();
+        self.addr.write().unwrap().clear();
+        *self.offset.lock().unwrap() = 0;
+    }
+
+    fn allocate_addr(&self) -> IpAddr {
         let hosts = self.network.hosts();
+        let mut offset = self.offset.lock().unwrap();
         let mut addr;
         loop {
-            let n = self.offset % self.pool_size;
+            let n = offset.deref() % self.pool_size;
             addr = hosts.clone().nth(n).unwrap();
-            self.offset += 1;
-            if addr == self.network.addr() {
+            *offset += 1;
+            if addr.eq(&self.gateway) {
                 continue;
             }
             break;
         }
         addr
+    }
+}
+
+impl Addr {
+    pub fn new(domain: &str, ip: Option<IpAddr>, target: &str, remark: &str) -> Self {
+        let mut records = vec![];
+
+        let name = Name::from_str(domain).unwrap();
+
+        if let Some(ip) = ip {
+            let record = match ip {
+                std::net::IpAddr::V4(v) => Record::from_rdata(name.clone(), 10, RData::A(v)),
+                std::net::IpAddr::V6(v) => Record::from_rdata(name.clone(), 10, RData::AAAA(v)),
+            };
+            records.push(record);
+        }
+
+        if !remark.is_empty() {
+            records.push(Record::from_rdata(
+                name,
+                10,
+                RData::TXT(TXT::new(vec![remark.to_string()])),
+            ));
+        }
+
+        Self {
+            domain: domain.to_string(),
+            ip,
+            target: target.to_string(),
+            remark: remark.to_string(),
+            records,
+        }
+    }
+}
+
+impl LookupObject for Addr {
+    fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a Record> + Send + 'a> {
+        Box::new(self.records.iter())
+    }
+
+    fn take_additionals(&mut self) -> Option<Box<dyn LookupObject>> {
+        None
     }
 }
 
@@ -129,9 +204,9 @@ mod tests {
                 let remark = format!("test{}", i);
                 let addr = table.apply(&domain, "", &remark);
                 assert_eq!(addr.ip, host);
-                assert!(table.find(&host).is_some());
+                assert!(table.find_by_ip(&host).is_some());
 
-                let found = table.find(&host);
+                let found = table.find_by_ip(&host);
                 assert!(found.is_some());
 
                 let found = found.unwrap();

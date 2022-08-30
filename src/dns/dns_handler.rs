@@ -1,25 +1,94 @@
+use std::{net::IpAddr, str::FromStr, time};
+
 use crate::config::{setting::RuleType, Addr, ArcSetting};
+use log::debug;
 use rayon::prelude::*;
-use std::{net::IpAddr, str::FromStr, sync::Arc};
 use trust_dns_server::{
-    authority::{Authority, LookupObject, LookupOptions},
+    authority::{AuthorityObject, LookupError, LookupObject, LookupOptions},
     client::rr::LowerName,
-    proto::rr::{rdata::TXT, RData, Record, RecordType},
+    proto::{
+        op::ResponseCode,
+        rr::{RData, RecordType},
+    },
     resolver::Name,
-    store::forwarder::ForwardAuthority,
+    server::RequestInfo,
 };
 
 pub(crate) struct DnsHandler {
-    upstream: Arc<ForwardAuthority>,
+    upstream: Box<dyn AuthorityObject>,
     setting: ArcSetting,
 }
 
 impl DnsHandler {
-    pub(crate) fn new(upstream: Arc<ForwardAuthority>, setting: ArcSetting) -> Self {
+    pub(crate) fn new(upstream: Box<dyn AuthorityObject>, setting: ArcSetting) -> Self {
         Self { upstream, setting }
     }
 
-    pub(crate) async fn handle_hosts(&self, domain: &str) -> Option<Box<dyn LookupObject>> {
+    pub(crate) async fn handle(
+        &self,
+        request_info: RequestInfo<'_>,
+        lookup_options: LookupOptions,
+    ) -> Result<Box<dyn LookupObject>, LookupError> {
+        let query = request_info.query;
+        let should_handle = query.query_type() == RecordType::A;
+
+        let domain = query.name().to_string();
+        let domain = domain.strip_suffix('.').unwrap_or("");
+
+        if Name::from_str(domain).is_err() {
+            return Err(LookupError::ResponseCode(ResponseCode::BADNAME));
+        }
+
+        let mut matched = false;
+
+        if should_handle {
+            let addr = self.setting.dns_table.find_by_domain(domain);
+            match addr {
+                Some(Some(v)) => {
+                    return Ok(Box::new(v));
+                }
+                None => {
+                    debug!("query src: {:?}, domain: {}", request_info.src.ip(), domain);
+
+                    let result = self
+                        .handle_hosts(domain)
+                        .await
+                        .or_else(|| self.apply_before_rules(domain));
+
+                    if let Some(v) = result {
+                        return Ok(Box::new(v));
+                    }
+                }
+                _ => matched = true,
+            }
+        }
+
+        let start = time::Instant::now();
+        let result = self.upstream.search(request_info, lookup_options).await;
+        debug!(
+            "upstream {} time: {:?}",
+            domain,
+            time::Instant::now()
+                .saturating_duration_since(start)
+                .as_millis()
+        );
+
+        if should_handle && !matched {
+            match result {
+                Ok(r) => {
+                    if let Some(v) = self.apply_post_rules(domain, r.as_ref()) {
+                        return Ok(Box::new(v));
+                    }
+
+                    return Ok(r);
+                }
+                _ => return result,
+            }
+        }
+        result
+    }
+
+    pub(crate) async fn handle_hosts(&self, domain: &str) -> Option<Addr> {
         let m = self
             .setting
             .hosts_match
@@ -29,16 +98,12 @@ impl DnsHandler {
 
         let name = Name::from_str(domain).unwrap();
 
-        if let Ok(IpAddr::V4(ip)) = IpAddr::from_str(&m) {
-            let record = Record::from_rdata(name.clone(), 60, RData::A(ip));
-            let r = DnsLookup {
-                records: vec![record],
-            };
-            return Some(Box::new(r));
+        if let Ok(ip) = IpAddr::from_str(&m) {
+            return Some(self.setting.dns_table.allocate(domain, Some(ip), "host"));
         }
 
-        let upstream = self.upstream.clone();
-        let r = upstream
+        let r = self
+            .upstream
             .lookup(
                 &LowerName::new(&name),
                 RecordType::A,
@@ -46,12 +111,25 @@ impl DnsHandler {
             )
             .await;
         match r {
-            Ok(v) => Some(Box::new(v)),
+            Ok(v) => {
+                for v in v.iter() {
+                    if let Some(v) = v.data() {
+                        if let Some(v) = v.as_a() {
+                            return Some(self.setting.dns_table.allocate(
+                                domain,
+                                Some(IpAddr::V4(*v)),
+                                "host",
+                            ));
+                        }
+                    }
+                }
+                None
+            }
             Err(_) => None,
         }
     }
 
-    pub(crate) fn apply_before_rules(&self, domain: &str) -> Option<Box<dyn LookupObject>> {
+    pub(crate) fn apply_before_rules(&self, domain: &str) -> Option<Addr> {
         let rules = {
             let rules = &self.setting.rules.read().unwrap();
             rules
@@ -61,33 +139,23 @@ impl DnsHandler {
                 .collect::<Vec<_>>()
         };
 
-        let result = rules.par_iter().find_map_any(|r| {
+        rules.par_iter().find_map_any(|r| {
             if let Some(m) = r.match_domain(domain) {
                 let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, r.target);
 
-                let addr = self
-                    .setting
-                    .dns_table
-                    .write()
-                    .unwrap()
-                    .apply(domain, &r.target, &remark);
+                let addr = self.setting.dns_table.apply(domain, &r.target, &remark);
 
-                return Some(DnsLookup::from(addr));
+                return Some(addr);
             }
             None
-        });
-
-        match result {
-            Some(r) => Some(Box::new(r)),
-            None => None,
-        }
+        })
     }
 
     pub(crate) fn apply_post_rules(
         &self,
         domain: &str,
         records: &dyn LookupObject,
-    ) -> Option<Box<dyn LookupObject>> {
+    ) -> Option<Addr> {
         let rules = {
             let rules = &self.setting.rules.read().unwrap();
             rules
@@ -101,7 +169,11 @@ impl DnsHandler {
             return None;
         }
 
-        let records = records.iter().cloned().collect::<Vec<_>>();
+        let records = records
+            .iter()
+            .filter(|v| v.data().is_some() && v.data().unwrap().as_a().is_some())
+            .cloned()
+            .collect::<Vec<_>>();
 
         let ips = records
             .par_iter()
@@ -109,7 +181,6 @@ impl DnsHandler {
                 if let Some(v) = v.data() {
                     let r = match v {
                         RData::A(v) => Some(IpAddr::V4(*v)),
-                        RData::AAAA(v) => Some(IpAddr::V6(*v)),
                         _ => None,
                     };
                     return r;
@@ -120,89 +191,17 @@ impl DnsHandler {
 
         let ips = ips.iter().flatten().collect::<Vec<_>>();
 
-        let result = ips.par_iter().find_map_any(|v| {
+        ips.par_iter().find_map_any(|v| {
             rules.par_iter().find_map_any(|r| {
                 if let Some(m) = r.match_cidr(v) {
                     let remark =
                         format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, r.target);
+                    let addr = self.setting.dns_table.apply(domain, &r.target, &remark);
 
-                    let addr = self
-                        .setting
-                        .dns_table
-                        .write()
-                        .unwrap()
-                        .apply(domain, &r.target, &remark);
-
-                    return Some(DnsLookup::from(addr));
+                    return Some(addr);
                 }
                 None
             })
-        });
-
-        match result {
-            Some(r) => Some(Box::new(r)),
-            None => None,
-        }
-    }
-}
-
-#[derive(Default)]
-struct DnsLookup {
-    records: Vec<Record>,
-}
-
-impl LookupObject for DnsLookup {
-    fn is_empty(&self) -> bool {
-        self.records.is_empty()
-    }
-
-    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a Record> + Send + 'a> {
-        Box::new(self.records.iter())
-    }
-
-    fn take_additionals(&mut self) -> Option<Box<dyn LookupObject>> {
-        None
-    }
-}
-
-impl From<Addr> for DnsLookup {
-    fn from(addr: Addr) -> Self {
-        let mut records = vec![];
-
-        let name = Name::from_str(&addr.domain).unwrap();
-
-        let record = match addr.ip {
-            std::net::IpAddr::V4(ip) => Record::from_rdata(name.clone(), 10, RData::A(ip)),
-            std::net::IpAddr::V6(_) => todo!(),
-        };
-        records.push(record);
-
-        records.push(Record::from_rdata(
-            name,
-            10,
-            RData::TXT(TXT::new(vec![format!("match {}", addr.remark)])),
-        ));
-
-        Self { records }
-    }
-}
-
-impl From<Box<dyn LookupObject>> for DnsLookup {
-    fn from(objs: Box<dyn LookupObject>) -> Self {
-        if objs.is_empty() {
-            return Self::default();
-        }
-
-        let records = objs.iter().cloned().collect();
-        Self { records }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn feature() {
-        let pattern = glob::Pattern::new("*.google.com").unwrap();
-        println!("{:?}", pattern.matches("www.google.com"));
+        })
     }
 }

@@ -1,6 +1,4 @@
 use anyhow::Error;
-use lazy_static::__Deref;
-use log::debug;
 use std::{net::IpAddr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 use trust_dns_server::{
@@ -9,7 +7,7 @@ use trust_dns_server::{
         UpdateResult, ZoneType,
     },
     client::rr::LowerName,
-    proto::rr::{DNSClass, RecordType},
+    proto::rr::RecordType,
     resolver::{
         config::{NameServerConfigGroup, ResolverOpts},
         Name,
@@ -32,13 +30,14 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 
     // optimize for forward / upstream
     let mut opts = ResolverOpts::default();
+    opts.cache_size = 100;
+    opts.attempts = 1;
     opts.positive_max_ttl = Some(Duration::from_secs(60));
     opts.positive_min_ttl = Some(Duration::from_secs(10));
-    opts.negative_max_ttl = Some(Duration::from_secs(5));
 
     let forward_config = ForwardConfig {
         name_servers,
-        options: Some(opts),
+        options: Some(ResolverOpts::default()),
     };
 
     let upstream =
@@ -47,8 +46,8 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
             .unwrap();
 
     let upstream = Arc::new(upstream);
-    let handler = DnsHandler::new(upstream.clone(), setting.clone());
-    let authority = HijackAuthority::new(upstream, handler);
+    let handler = DnsHandler::new(Box::new(upstream.clone()), setting.clone());
+    let authority = HijackAuthority::new(Box::new(upstream.clone()), handler);
 
     let mut catalog = Catalog::new();
     catalog.upsert(LowerName::from(Name::root()), Box::new(authority));
@@ -63,12 +62,12 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 }
 
 struct HijackAuthority {
-    upstream: Arc<ForwardAuthority>,
+    upstream: Box<dyn AuthorityObject>,
     handler: DnsHandler,
 }
 
 impl HijackAuthority {
-    fn new(upstream: Arc<ForwardAuthority>, handler: DnsHandler) -> Self {
+    fn new(upstream: Box<dyn AuthorityObject>, handler: DnsHandler) -> Self {
         Self { upstream, handler }
     }
 }
@@ -109,40 +108,8 @@ impl AuthorityObject for HijackAuthority {
         request_info: RequestInfo<'_>,
         lookup_options: LookupOptions,
     ) -> Result<Box<dyn LookupObject>, LookupError> {
-        let query = request_info.query;
-        let should_handle =
-            query.query_class() == DNSClass::IN && query.query_type() == RecordType::A;
-
-        let domain = query.name().to_string();
-        let domain = domain.strip_suffix('.').unwrap_or("");
-
-        if should_handle {
-            debug!("query src: {:?}, domain: {}", request_info.src.ip(), domain);
-
-            if let Some(r) = self.handler.handle_hosts(domain).await {
-                return Ok(r);
-            }
-
-            if let Some(r) = self.handler.apply_before_rules(domain) {
-                return Ok(r);
-            }
-        }
-
-        let result = self.upstream.search(request_info, lookup_options).await;
-
-        if should_handle {
-            match result {
-                Ok(r) => {
-                    if let Some(r) = self.handler.apply_post_rules(domain, r.deref()) {
-                        return Ok(r);
-                    }
-
-                    return Ok(r);
-                }
-                _ => return result,
-            }
-        }
-        result
+        // self.upstream.search(request_info, lookup_options).await
+        self.handler.handle(request_info, lookup_options).await
     }
 
     async fn get_nsec_records(

@@ -23,27 +23,27 @@ pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
         anyhow::bail!("file not found {}", file);
     }
 
-    let setting: Setting =
+    let mut setting: Setting =
         serde_yaml::from_str(fs::read_to_string(path.clone()).unwrap().as_str())?;
-
-    let setting = Arc::new(setting);
 
     debug!("load config file: {:?}", path.as_path());
 
     // load config.d
     let mut config_dir = PathBuf::from(path.parent().unwrap());
     config_dir.push("config.d");
-    load_all_rules(setting.clone(), config_dir.clone())?;
+    load_all_rules(&setting, config_dir.clone())?;
 
     let mut host_file = config_dir.clone();
     host_file.push("hosts");
-    load_hosts(setting.clone(), host_file)?;
+    load_hosts(&setting, host_file)?;
 
     // test settings
-    test_setting(setting.clone())?;
+    test_setting(&setting)?;
 
     // dns table
-    *setting.dns_table.write().unwrap() = DnsTable::new(&setting.network);
+    setting.dns_table = DnsTable::new(&setting.network);
+
+    let setting = Arc::new(setting);
 
     // watch rules
     if !cli.test && !cli.disable_watch {
@@ -53,7 +53,7 @@ pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
     Ok(setting)
 }
 
-fn load_hosts(setting: ArcSetting, host_file: PathBuf) -> Result<(), Error> {
+fn load_hosts(setting: &Setting, host_file: PathBuf) -> Result<(), Error> {
     let hosts = if host_file.is_file() && host_file.exists() {
         debug!("load host file: {:?}", host_file);
         fs::read_to_string(host_file)?
@@ -64,11 +64,12 @@ fn load_hosts(setting: ArcSetting, host_file: PathBuf) -> Result<(), Error> {
 
     *setting.hosts.write().unwrap() = hosts;
     *setting.hosts_match.write().unwrap() = Hosts::parse(&setting.hosts.read().unwrap()).unwrap();
+    setting.dns_table.clear();
 
     Ok(())
 }
 
-fn load_all_rules(setting: ArcSetting, rules_dir: PathBuf) -> Result<(), Error> {
+fn load_all_rules(setting: &Setting, rules_dir: PathBuf) -> Result<(), Error> {
     if !rules_dir.exists() {
         return Ok(());
     }
@@ -98,7 +99,7 @@ fn load_all_rules(setting: ArcSetting, rules_dir: PathBuf) -> Result<(), Error> 
     }
 
     *setting.rules.write().unwrap() = rules;
-    setting.dns_table.write().unwrap().clear();
+    setting.dns_table.clear();
 
     Ok(())
 }
@@ -130,7 +131,7 @@ fn watch(setting: ArcSetting, rules_dir: PathBuf) {
                 | Ok(DebouncedEvent::Remove(path)) => {
                     if path.file_name().unwrap().to_str().unwrap() == "hosts" {
                         info!("reload hosts");
-                        if let Err(e) = load_hosts(setting.clone(), path) {
+                        if let Err(e) = load_hosts(&setting.clone(), path) {
                             error!("load hosts error: {:?}", e);
                         }
                         continue;
@@ -140,7 +141,7 @@ fn watch(setting: ArcSetting, rules_dir: PathBuf) {
                     match ext {
                         "yaml" | "yml" => {
                             info!("reload rules");
-                            if let Err(e) = load_all_rules(setting.clone(), rules_dir.clone()) {
+                            if let Err(e) = load_all_rules(&setting.clone(), rules_dir.clone()) {
                                 error!("load rules error: {:?}", e);
                             }
                         }
@@ -154,7 +155,7 @@ fn watch(setting: ArcSetting, rules_dir: PathBuf) {
     });
 }
 
-fn test_setting(setting: ArcSetting) -> Result<(), Error> {
+fn test_setting(setting: &Setting) -> Result<(), Error> {
     assert!((0u32..=0xffff).contains(&setting.dns_port));
 
     let network = IpNet::from_str(&setting.network);

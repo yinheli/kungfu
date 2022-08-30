@@ -1,9 +1,6 @@
-use std::{
-    net::{IpAddr},
-    sync::Arc,
-};
+use std::{net::IpAddr, sync::Arc};
 
-use log::{warn};
+use log::warn;
 use rand::seq::SliceRandom;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{
@@ -104,12 +101,7 @@ fn random_proxy(proxy: &Vec<String>) -> String {
 }
 
 fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String, u16)> {
-    if let Some(addr) = setting
-        .dns_table
-        .read()
-        .unwrap()
-        .find(&session.dst_addr.into())
-    {
+    if let Some(addr) = setting.dns_table.find_by_ip(&session.dst_addr.into()) {
         return Some((addr.target, addr.domain, session.dst_port));
     }
 
