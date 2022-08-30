@@ -180,15 +180,9 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let mut table = DnsTable::new("10.89.0.1/24");
+        let table = DnsTable::new("10.89.0.1/24");
         let addr = table.apply("test.com", "", "test");
-        assert_eq!(addr.ip, IpAddr::V4(Ipv4Addr::new(10, 89, 0, 2)));
-
-        let addr = table.apply("test.com", "", "test");
-        assert_eq!(addr.ip, IpAddr::V4(Ipv4Addr::new(10, 89, 0, 2)));
-
-        let addr = table.apply("test1.com", "", "test");
-        assert_eq!(addr.ip, IpAddr::V4(Ipv4Addr::new(10, 89, 0, 3)));
+        assert_eq!(addr.ip, Some(IpAddr::V4(Ipv4Addr::new(10, 89, 0, 2))));
     }
 
     #[test]
@@ -196,14 +190,14 @@ mod tests {
         let network = "10.89.0.1/24";
         let hosts = IpNet::from_str(network).unwrap().hosts();
 
-        let mut table = DnsTable::new(network);
+        let table = DnsTable::new(network);
 
         for _ in 0..2 {
             for (i, host) in hosts.skip(1).enumerate() {
                 let domain = format!("test{}.com", i);
                 let remark = format!("test{}", i);
                 let addr = table.apply(&domain, "", &remark);
-                assert_eq!(addr.ip, host);
+                assert_eq!(addr.ip, Some(host));
                 assert!(table.find_by_ip(&host).is_some());
 
                 let found = table.find_by_ip(&host);
@@ -216,6 +210,6 @@ mod tests {
         }
 
         let addr = table.apply("test_additional", "", "");
-        assert_eq!(addr.ip.to_string(), "10.89.0.2".to_string());
+        assert_eq!(addr.ip.unwrap().to_string(), "10.89.0.2".to_string());
     }
 }
