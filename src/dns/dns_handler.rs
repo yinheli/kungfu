@@ -1,8 +1,8 @@
-use std::{net::IpAddr, str::FromStr, time};
+use std::{net::IpAddr, str::FromStr, time::Duration};
 
-use crate::config::{setting::RuleType, Addr, ArcSetting};
 use log::debug;
 use rayon::prelude::*;
+use tokio::time;
 use trust_dns_server::{
     authority::{AuthorityObject, LookupError, LookupObject, LookupOptions},
     client::rr::LowerName,
@@ -13,6 +13,8 @@ use trust_dns_server::{
     resolver::Name,
     server::RequestInfo,
 };
+
+use crate::config::{setting::RuleType, Addr, ArcSetting};
 
 pub(crate) struct DnsHandler {
     upstream: Box<dyn AuthorityObject>,
@@ -63,15 +65,22 @@ impl DnsHandler {
             }
         }
 
-        let start = time::Instant::now();
-        let result = self.upstream.search(request_info, lookup_options).await;
-        debug!(
-            "upstream {} time: {:?}",
-            domain,
-            time::Instant::now()
-                .saturating_duration_since(start)
-                .as_millis()
-        );
+        let result = {
+            let r = time::timeout(
+                Duration::from_secs(2),
+                self.upstream.search(request_info, lookup_options),
+            )
+            .await;
+            match r {
+                Ok(v) => v,
+                Err(_) => {
+                    debug!("upstream timeout {}", domain);
+                    Err(LookupError::ResponseCode(ResponseCode::ServFail))
+                }
+            }
+        };
+
+        // let result = self.upstream.search(request_info, lookup_options).await;
 
         if should_handle && !matched {
             match result {

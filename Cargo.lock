@@ -606,6 +606,7 @@ dependencies = [
  "lru",
  "notify",
  "nu-pretty-hex",
+ "num_cpus",
  "pnet",
  "rand",
  "rayon",

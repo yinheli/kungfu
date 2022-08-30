@@ -1,13 +1,16 @@
 use anyhow::Error;
 use std::{net::IpAddr, sync::Arc, time::Duration};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::{
+    net::{TcpListener, UdpSocket},
+    time,
+};
 use trust_dns_server::{
     authority::{
         AuthorityObject, Catalog, LookupError, LookupObject, LookupOptions, MessageRequest,
         UpdateResult, ZoneType,
     },
     client::rr::LowerName,
-    proto::rr::RecordType,
+    proto::{op::ResponseCode, rr::RecordType},
     resolver::{
         config::{NameServerConfigGroup, ResolverOpts},
         Name,
@@ -30,14 +33,15 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 
     // optimize for forward / upstream
     let mut opts = ResolverOpts::default();
-    opts.cache_size = 100;
-    opts.attempts = 1;
+    opts.timeout = Duration::from_secs(2);
     opts.positive_max_ttl = Some(Duration::from_secs(60));
     opts.positive_min_ttl = Some(Duration::from_secs(10));
+    opts.negative_max_ttl = Some(Duration::from_secs(120));
+    opts.negative_max_ttl = Some(Duration::from_secs(120));
 
     let forward_config = ForwardConfig {
         name_servers,
-        options: Some(ResolverOpts::default()),
+        options: Some(opts),
     };
 
     let upstream =
@@ -110,8 +114,13 @@ impl AuthorityObject for HijackAuthority {
         request_info: RequestInfo<'_>,
         lookup_options: LookupOptions,
     ) -> Result<Box<dyn LookupObject>, LookupError> {
-        // self.upstream.search(request_info, lookup_options).await
-        self.handler.handle(request_info, lookup_options).await
+        let future = self.handler.handle(request_info, lookup_options);
+        // let future = self.upstream.search(request_info, lookup_options);
+
+        match time::timeout(Duration::from_millis(2000), future).await {
+            Ok(r) => r,
+            Err(_) => Err(LookupError::ResponseCode(ResponseCode::ServFail)),
+        }
     }
 
     async fn get_nsec_records(

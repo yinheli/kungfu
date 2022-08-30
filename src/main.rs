@@ -10,8 +10,7 @@ mod dns;
 mod gateway;
 mod logger;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = cli::Cli::parse();
 
     // init logger
@@ -35,5 +34,16 @@ async fn main() {
         process::exit(0);
     }
 
-    join!(gateway::serve(setting.clone()), dns::serve(setting.clone()));
+    let cpu = num_cpus::get();
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("kungfu")
+        .worker_threads(cpu)
+        .max_blocking_threads(cpu * 10)
+        .thread_stack_size(1024 * 256)
+        .build()
+        .unwrap();
+
+    rt.block_on(async { join!(gateway::serve(setting.clone()), dns::serve(setting.clone())) });
 }

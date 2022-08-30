@@ -115,7 +115,7 @@ fn load_rule_file(rule_file: PathBuf) -> Result<Option<Vec<Rule>>, Error> {
 fn watch(setting: ArcSetting, rules_dir: PathBuf) {
     debug!("watch dir: {:?}", &rules_dir);
 
-    tokio::spawn(async move {
+    std::thread::spawn(move || {
         let (tx, rx) = channel();
 
         let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(5)).unwrap();
