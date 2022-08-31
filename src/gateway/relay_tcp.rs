@@ -104,7 +104,7 @@ impl Relay {
                                             )
                                             .unwrap();
                                         static ref RELAY_COUNT_CACHE: Mutex<LruCache<String, i32>> =
-                                            Mutex::new(LruCache::new(5000));
+                                            Mutex::new(LruCache::new(1000));
                                     }
 
                                     RELAY_COUNT
