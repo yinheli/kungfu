@@ -1,6 +1,7 @@
 use std::{
     net::IpAddr,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use log::warn;
@@ -14,6 +15,7 @@ use tokio::{
         tcp::{ReadHalf, WriteHalf},
         TcpListener,
     },
+    time,
 };
 
 use crate::{
@@ -184,6 +186,8 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
 }
 
 async fn copy<'a>(r: &mut ReadHalf<'a>, w: &mut WriteHalf<'a>) -> Result<u64, io::Error> {
+    time::timeout(Duration::from_secs(1), r.readable()).await??;
+    time::timeout(Duration::from_secs(1), w.writable()).await??;
     let n = io::copy(r, w).await?;
     w.shutdown().await?;
     Ok(n)
