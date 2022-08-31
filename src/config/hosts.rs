@@ -54,7 +54,7 @@ mod tests {
         # like /etc/hosts but add CNAME support
         192.168.1.20                  my-app.com       # this is end line comment
         cdn.my-app.com.a.bdydns.com.  cdn.my-app.com
-        
+
         192.168.8.20                  *-dev.app.com    # glob express
         ";
 
