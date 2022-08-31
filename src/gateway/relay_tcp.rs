@@ -1,11 +1,19 @@
-use std::{net::IpAddr, sync::Arc};
+use std::{
+    net::IpAddr,
+    sync::{Arc, Mutex},
+};
 
 use log::warn;
+use lru::LruCache;
+use prometheus::{register_int_counter_vec, IntCounterVec};
 use rand::seq::SliceRandom;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{
     io::{self, AsyncWriteExt},
-    net::TcpListener,
+    net::{
+        tcp::{ReadHalf, WriteHalf},
+        TcpListener,
+    },
 };
 
 use crate::{
@@ -64,26 +72,73 @@ impl Relay {
                     }
 
                     let proxy = proxy.unwrap();
-                    let proxy = random_proxy(&proxy.values);
+                    let proxy_url = random_proxy(&proxy.values);
 
-                    let outbound = open_proxy(proxy, &target.1, target.2).await;
+                    let outbound = open_proxy(proxy_url, &target.1, target.2).await;
 
                     match outbound {
                         Ok(mut outbound) => {
                             let (mut ri, mut wi) = stream.split();
                             let (mut ro, mut wo) = outbound.split();
 
-                            let client_to_server = async {
-                                io::copy(&mut ri, &mut wo).await?;
-                                wo.shutdown().await
-                            };
+                            let client_to_server = copy(&mut ri, &mut wo);
+                            let server_to_client = copy(&mut ro, &mut wi);
 
-                            let server_to_client = async {
-                                io::copy(&mut ro, &mut wi).await?;
-                                wi.shutdown().await
-                            };
+                            let result = tokio::try_join!(client_to_server, server_to_client);
 
-                            let _ = tokio::try_join!(client_to_server, server_to_client);
+                            if let Ok((up, down)) = result {
+                                if setting.metrics.is_some() {
+                                    lazy_static! {
+                                        static ref RELAY_COUNT: IntCounterVec =
+                                            register_int_counter_vec!(
+                                                "relay_total",
+                                                "Number of bytes relay by proxy",
+                                                &["action", "proxy"]
+                                            )
+                                            .unwrap();
+                                        static ref RELAY_HOST_COUNT: IntCounterVec =
+                                            register_int_counter_vec!(
+                                                "relay_host_total",
+                                                "Number of bytes relay by proxy with domain (latest 5k domains)",
+                                                &["action", "proxy", "domain"]
+                                            )
+                                            .unwrap();
+                                        static ref RELAY_COUNT_CACHE: Mutex<LruCache<String, i32>> =
+                                            Mutex::new(LruCache::new(5000));
+                                    }
+
+                                    RELAY_COUNT
+                                        .with_label_values(&["upload", &proxy.name])
+                                        .inc_by(up);
+                                    RELAY_COUNT
+                                        .with_label_values(&["download", &proxy.name])
+                                        .inc_by(down);
+
+                                    RELAY_HOST_COUNT
+                                        .with_label_values(&["upload", &proxy.name, &target.1])
+                                        .inc_by(up);
+                                    RELAY_HOST_COUNT
+                                        .with_label_values(&["download", &proxy.name, &target.1])
+                                        .inc_by(down);
+
+                                    if let Some((v, _)) =
+                                        RELAY_COUNT_CACHE.lock().unwrap().push(target.1.clone(), 1)
+                                    {
+                                        if !v.eq(&target.1) {
+                                            let _ = RELAY_HOST_COUNT.remove_label_values(&[
+                                                "upload",
+                                                &proxy.name,
+                                                &v,
+                                            ]);
+                                            let _ = RELAY_HOST_COUNT.remove_label_values(&[
+                                                "download",
+                                                &proxy.name,
+                                                &v,
+                                            ]);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Err(e) => {
                             warn!("open proxy: {}", e);
@@ -126,4 +181,10 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
     }
 
     None
+}
+
+async fn copy<'a>(r: &mut ReadHalf<'a>, w: &mut WriteHalf<'a>) -> Result<u64, io::Error> {
+    let n = io::copy(r, w).await?;
+    w.shutdown().await?;
+    Ok(n)
 }

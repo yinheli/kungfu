@@ -1,6 +1,8 @@
 use std::{net::IpAddr, str::FromStr, time::Duration};
 
 use log::debug;
+
+use prometheus::{register_int_counter, IntCounter};
 use rayon::prelude::*;
 use tokio::time;
 use trust_dns_server::{
@@ -39,6 +41,15 @@ impl DnsHandler {
 
         if Name::from_str(domain).is_err() {
             return Err(LookupError::ResponseCode(ResponseCode::BADNAME));
+        }
+
+        // metrics
+        if self.setting.metrics.is_some() {
+            lazy_static! {
+                static ref DNS_QUERY: IntCounter =
+                    register_int_counter!("dns_query_total", "Number of dns query").unwrap();
+            }
+            DNS_QUERY.inc();
         }
 
         let mut matched = false;

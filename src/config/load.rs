@@ -5,6 +5,7 @@ use anyhow::{anyhow, Error};
 use ipnet::IpNet;
 use log::{debug, error, info};
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::{
     fs,
@@ -171,6 +172,13 @@ fn test_setting(setting: &Setting) -> Result<(), Error> {
     }
 
     assert!(!setting.dns_upstream.is_empty());
+
+    if setting.metrics.is_some() {
+        let addr = setting.metrics.clone();
+        if SocketAddr::from_str(&addr.unwrap()).is_err() {
+            return Err(anyhow!("metrics is invalid"));
+        }
+    }
 
     Ok(())
 }

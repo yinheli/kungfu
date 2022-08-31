@@ -1,14 +1,17 @@
-// #![feature(hash_drain_filter)]
+#[macro_use]
+extern crate lazy_static;
 
 use clap::Parser;
 use log::info;
 use std::process;
 use tokio::join;
+
 mod cli;
 mod config;
 mod dns;
 mod gateway;
 mod logger;
+mod metrics;
 
 fn main() {
     let cli = cli::Cli::parse();
@@ -45,5 +48,13 @@ fn main() {
         .build()
         .unwrap();
 
-    rt.block_on(async { join!(gateway::serve(setting.clone()), dns::serve(setting.clone())) });
+    let metrics_addr = setting.metrics.clone();
+
+    rt.block_on(async move {
+        join!(
+            gateway::serve(setting.clone()),
+            dns::serve(setting.clone()),
+            metrics::serve(metrics_addr),
+        )
+    });
 }

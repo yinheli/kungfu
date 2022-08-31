@@ -14,6 +14,7 @@ pub struct Setting {
     pub proxy: Vec<Proxy>,
     pub hosts: RwLock<String>,
     pub rules: RwLock<Vec<Rule>>,
+    pub metrics: Option<String>,
 
     #[serde(skip_serializing, skip_deserializing)]
     pub hosts_match: RwLock<Hosts>,
@@ -31,6 +32,7 @@ impl Default for Setting {
             proxy: Default::default(),
             hosts: Default::default(),
             rules: Default::default(),
+            metrics: None,
             hosts_match: Default::default(),
             dns_table: Default::default(),
         }
