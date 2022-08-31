@@ -30,10 +30,10 @@ ipnet = "2"
 lru = "0.7"
 glob = "0.3.0"
 rayon = "1"
-# tun = { version = "0.5", features = ["async"] }
-tun = { git = "https://github.com/meh/rust-tun.git", branch = "master", features = [
-  "async",
-] }
+tun = { version = "0.5", features = ["async"] }
+# tun = { git = "https://github.com/meh/rust-tun.git", branch = "master", features = [
+#   "async",
+# ] }
 futures = "0.3"
 bytes = "1"
 pnet = "0.31"
