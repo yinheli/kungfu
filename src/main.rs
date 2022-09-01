@@ -39,10 +39,17 @@ fn main() {
 
     let cpu = num_cpus::get();
 
+    // setup rayon thread pool
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .thread_name(|_| "kungfu-rayon".to_string())
+        .build_global()
+        .unwrap();
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_name("kungfu")
-        .worker_threads(cpu * 2)
+        .thread_name("kungfu-worker")
+        .worker_threads(cpu)
         .thread_stack_size(1024 * 256)
         .build()
         .unwrap();
