@@ -5,6 +5,7 @@
     "BADNAME",
     "bdydns",
     "cpus",
+    "edns",
     "Hasher",
     "ipnet",
     "kungfu",
@@ -12,6 +13,7 @@
     "pnet",
     "proto",
     "rdata",
+    "reqs",
     "rtype"
   ]
 }
