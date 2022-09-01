@@ -42,8 +42,7 @@ fn main() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("kungfu")
-        .worker_threads(cpu)
-        .max_blocking_threads(cpu * 10)
+        .worker_threads(cpu * 2)
         .thread_stack_size(1024 * 256)
         .build()
         .unwrap();
