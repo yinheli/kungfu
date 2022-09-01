@@ -4,7 +4,7 @@ use log::debug;
 
 use prometheus::{register_int_counter, IntCounter};
 use rayon::prelude::*;
-use tokio::time;
+use tokio::time::timeout;
 use trust_dns_server::{
     authority::{AuthorityObject, LookupError, LookupObject, LookupOptions},
     client::rr::LowerName,
@@ -76,22 +76,12 @@ impl DnsHandler {
             }
         }
 
-        let result = {
-            let r = time::timeout(
-                Duration::from_secs(2),
-                self.upstream.search(request_info, lookup_options),
-            )
-            .await;
-            match r {
-                Ok(v) => v,
-                Err(_) => {
-                    debug!("upstream timeout {}", domain);
-                    Err(LookupError::ResponseCode(ResponseCode::ServFail))
-                }
-            }
-        };
-
-        // let result = self.upstream.search(request_info, lookup_options).await;
+        let result = timeout(
+            Duration::from_secs(2),
+            self.upstream.search(request_info, lookup_options),
+        )
+        .await
+        .map_err(|_| LookupError::ResponseCode(ResponseCode::ServFail))?;
 
         if should_handle && !matched {
             match result {
