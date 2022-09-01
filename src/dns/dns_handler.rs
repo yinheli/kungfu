@@ -52,7 +52,7 @@ impl DnsHandler {
             DNS_QUERY.inc();
         }
 
-        let mut matched = false;
+        let mut matching_rules = false;
 
         if should_handle {
             let addr = self.setting.dns_table.find_by_domain(domain);
@@ -63,6 +63,8 @@ impl DnsHandler {
                 None => {
                     debug!("query src: {:?}, domain: {}", request_info.src.ip(), domain);
 
+                    matching_rules = true;
+
                     let result = self
                         .handle_hosts(domain)
                         .await
@@ -72,7 +74,7 @@ impl DnsHandler {
                         return Ok(Box::new(v));
                     }
                 }
-                _ => matched = true,
+                _ => {}
             }
         }
 
@@ -83,7 +85,7 @@ impl DnsHandler {
         .await
         .map_err(|_| LookupError::ResponseCode(ResponseCode::ServFail))?;
 
-        if should_handle && !matched {
+        if should_handle && matching_rules {
             match result {
                 Ok(r) => {
                     if let Some(v) = self.apply_post_rules(domain, r.as_ref()) {
