@@ -34,8 +34,9 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
     // optimize for forward / upstream
     let mut opts = ResolverOpts::default();
     opts.timeout = Duration::from_secs(2);
-    opts.positive_max_ttl = Some(Duration::from_secs(60));
-    opts.positive_min_ttl = Some(Duration::from_secs(10));
+    opts.cache_size = 128;
+    opts.positive_max_ttl = Some(Duration::from_secs(120));
+    opts.positive_min_ttl = Some(Duration::from_secs(60));
     opts.negative_max_ttl = Some(Duration::from_secs(120));
     opts.negative_max_ttl = Some(Duration::from_secs(120));
 
