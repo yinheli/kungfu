@@ -33,8 +33,7 @@ pub async fn open_proxy(proxy: String, target: &str, target_port: u16) -> Result
         Socks5Stream::connect(proxy, target_addr, target_port, config).await
     };
 
-    match socket {
-        Ok(s) => Ok(s.get_socket()),
-        Err(e) => Err(anyhow!("create proxy: {}", e)),
-    }
+    socket
+        .map(|v| v.get_socket())
+        .map_err(|e| anyhow!("create proxy: {}", e))
 }
