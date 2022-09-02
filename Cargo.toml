@@ -4,7 +4,7 @@ version = "0.1.4"
 edition = "2021"
 authors = ["yinheli <me@yinheli.com>"]
 keywords = ["dns", "proxy"]
-license = "MIT"
+license = "Apache-2.0"
 description = "Flexible DNS hijacking and proxy tool. Read more: https://github.com/yinheli/kungfu"
 repository = "https://github.com/yinheli/kungfu"
 
