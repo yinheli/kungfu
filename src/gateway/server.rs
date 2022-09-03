@@ -127,10 +127,26 @@ impl Gateway {
             // wait dev setup
             sleep(Duration::from_millis(200));
             debug!("for macOS manual add net route {}", network);
+
             let _ = Command::new("route")
                 .args(&["-n", "-q", "add", "-net", network, gateway])
                 .output();
+
+            let _ = Command::new("networksetup")
+                .args(&["-setdnsservers", "Wi-Fi", "127.0.0.1"])
+                .output();
         }
+
+        #[cfg(target_os = "macos")]
+        tokio::spawn(async {
+            use tokio::signal;
+            if let Ok(_) = signal::ctrl_c().await {
+                let _ = Command::new("networksetup")
+                    .args(&["-setdnsservers", "Wi-Fi", "empty"])
+                    .output();
+                process::exit(0);
+            }
+        });
 
         #[cfg(target_os = "linux")]
         {
