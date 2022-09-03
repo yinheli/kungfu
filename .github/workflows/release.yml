@@ -29,6 +29,10 @@ jobs:
             os: ubuntu-latest
             name: kungfu-i686-unknown-linux-musl.tar.gz
 
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: kungfu-aarch64-unknown-linux-gnu.tar.gz
+
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: kungfu-aarch64-unknown-linux-musl.tar.gz
