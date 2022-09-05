@@ -43,7 +43,7 @@ fn main() {
 
     // setup rayon thread pool
     rayon::ThreadPoolBuilder::new()
-        .num_threads(cpu)
+        .num_threads(2)
         .thread_name(|_| "kungfu-rayon".to_string())
         .build_global()
         .unwrap();
@@ -52,7 +52,7 @@ fn main() {
         .enable_all()
         .thread_name("kungfu-worker")
         .worker_threads(cpu)
-        .thread_stack_size(1024 * 256)
+        .thread_stack_size(1024 * 512)
         .build()
         .unwrap();
 

@@ -33,6 +33,7 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 
     // optimize for forward / upstream
     let mut opts = ResolverOpts::default();
+    opts.cache_size = 512;
     opts.attempts = 1;
     opts.check_names = false;
     opts.use_hosts_file = true;
