@@ -153,6 +153,9 @@ impl Relay {
 }
 
 fn random_proxy(proxy: &Vec<String>) -> String {
+    if proxy.len() == 1 {
+        return proxy[0].clone();
+    }
     let mut rng = rand::thread_rng();
     proxy.choose(&mut rng).unwrap().clone()
 }
