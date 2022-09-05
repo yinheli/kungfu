@@ -60,7 +60,6 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 
     let mut catalog = Catalog::new();
     catalog.upsert(LowerName::from(Name::root()), Box::new(authority));
-    let catalog = Arc::new(catalog);
 
     let mut server = ServerFuture::new(Handler { catalog });
     log::info!("dns listen port: {}", setting.dns_port);
@@ -139,7 +138,7 @@ impl AuthorityObject for HijackAuthority {
 }
 
 pub struct Handler {
-    catalog: Arc<Catalog>,
+    catalog: Catalog,
 }
 
 #[async_trait::async_trait]
@@ -149,9 +148,6 @@ impl RequestHandler for Handler {
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
-        self.catalog
-            .clone()
-            .lookup(request, None, response_handle)
-            .await
+        self.catalog.lookup(request, None, response_handle).await
     }
 }

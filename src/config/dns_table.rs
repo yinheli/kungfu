@@ -1,6 +1,5 @@
 use ipnet::IpNet;
 use lru::LruCache;
-use std::ops::Deref;
 use std::{
     net::{IpAddr, Ipv4Addr},
     str::FromStr,
@@ -111,7 +110,7 @@ impl DnsTable {
         let mut offset = self.offset.lock().unwrap();
         let mut addr;
         loop {
-            let n = offset.deref() % self.pool_size;
+            let n = *offset % self.pool_size;
             addr = hosts.clone().nth(n).unwrap();
             *offset += 1;
             if addr.eq(&self.gateway) {
@@ -171,8 +170,11 @@ impl LookupObject for Addr {
 
 #[cfg(test)]
 mod tests {
+    extern crate test;
+    use rayon::prelude::{IntoParallelIterator, ParallelIterator};
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
+    use test::Bencher;
 
     use ipnet::IpNet;
 
@@ -211,5 +213,49 @@ mod tests {
 
         let addr = table.apply("test_additional", "", "");
         assert_eq!(addr.ip.unwrap().to_string(), "10.89.0.2".to_string());
+    }
+
+    #[bench]
+    fn bench_allocate(b: &mut Bencher) {
+        let table = DnsTable::new("10.89.0.1/24");
+
+        b.iter(|| {
+            table.allocate_addr();
+        })
+    }
+
+    #[bench]
+    fn bench_apply_simple(b: &mut Bencher) {
+        let table = DnsTable::new("10.89.0.1/24");
+
+        b.iter(|| {
+            table.apply(&format!("example.com"), "", "");
+        })
+    }
+
+    #[bench]
+    fn bench_apply(b: &mut Bencher) {
+        let table = DnsTable::new("10.89.0.1/24");
+
+        b.iter(|| {
+            (0..100).into_par_iter().for_each(|i| {
+                table.apply(&format!("{i}.example.com"), "", "");
+            })
+        })
+    }
+
+    #[bench]
+    fn bench_find(b: &mut Bencher) {
+        let table = DnsTable::new("10.89.0.1/24");
+
+        (0..100).for_each(|i| {
+            table.apply(&format!("{i}.example.com"), "", "");
+        });
+
+        b.iter(|| {
+            (0..100).into_par_iter().for_each(|i| {
+                table.find_by_domain(&format!("{i}.example.com"));
+            })
+        })
     }
 }

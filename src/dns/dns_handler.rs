@@ -150,16 +150,13 @@ impl DnsHandler {
     }
 
     pub(crate) fn apply_before_rules(&self, domain: &str) -> Option<Addr> {
-        let rules = {
-            let rules = &self.setting.rules.read().unwrap();
-            rules
-                .iter()
-                .filter(|&v| v.rule_type == RuleType::Domain)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let rules = self.setting.rules.read().unwrap();
+        let rules = rules
+            .iter()
+            .filter(|&v| v.rule_type == RuleType::Domain)
+            .collect::<Vec<_>>();
 
-        rules.par_iter().find_map_any(|r| {
+        rules.par_iter().find_map_any(|&r| {
             if let Some(m) = r.match_domain(domain) {
                 let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, r.target);
 
@@ -176,14 +173,11 @@ impl DnsHandler {
         domain: &str,
         records: &dyn LookupObject,
     ) -> Option<Addr> {
-        let rules = {
-            let rules = &self.setting.rules.read().unwrap();
-            rules
-                .iter()
-                .filter(|&v| v.rule_type == RuleType::DnsCidr)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let rules = self.setting.rules.read().unwrap();
+        let rules = rules
+            .iter()
+            .filter(|&v| v.rule_type == RuleType::DnsCidr)
+            .collect::<Vec<_>>();
 
         if rules.is_empty() {
             return None;
@@ -192,7 +186,6 @@ impl DnsHandler {
         let records = records
             .iter()
             .filter(|v| v.data().is_some() && v.data().unwrap().as_a().is_some())
-            .cloned()
             .collect::<Vec<_>>();
 
         let ips = records
@@ -211,8 +204,8 @@ impl DnsHandler {
 
         let ips = ips.iter().flatten().collect::<Vec<_>>();
 
-        ips.par_iter().find_map_any(|v| {
-            rules.par_iter().find_map_any(|r| {
+        ips.par_iter().find_map_any(|&v| {
+            rules.par_iter().find_map_any(|&r| {
                 if let Some(m) = r.match_cidr(v) {
                     let remark =
                         format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, r.target);

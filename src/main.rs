@@ -1,3 +1,5 @@
+#![feature(test)]
+
 #[macro_use]
 extern crate lazy_static;
 
@@ -41,7 +43,7 @@ fn main() {
 
     // setup rayon thread pool
     rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
+        .num_threads(cpu)
         .thread_name(|_| "kungfu-rayon".to_string())
         .build_global()
         .unwrap();
