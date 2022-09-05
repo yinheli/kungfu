@@ -30,8 +30,8 @@ impl Nat {
     pub fn new(nat_type: Type) -> Self {
         Self {
             nat_type,
-            addr_map: RwLock::new(LruCache::new(10000)),
-            port_map: RwLock::new(LruCache::new(10000)),
+            addr_map: RwLock::new(LruCache::new(5000)),
+            port_map: RwLock::new(LruCache::new(5000)),
         }
     }
 
