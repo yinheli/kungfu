@@ -2,7 +2,7 @@ use anyhow::Error;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
 #[derive(Debug, Default)]
-pub struct Hosts(Vec<(String, glob::Pattern)>);
+pub struct Hosts(Vec<(String, Vec<glob::Pattern>)>);
 
 impl Hosts {
     pub fn parse(hosts: &str) -> Result<Self, Error> {
@@ -23,9 +23,13 @@ impl Hosts {
             }
 
             let target = item[0].to_string();
-            let pattern = glob::Pattern::new(item[1])?;
+            let mut patterns = vec![];
+            for x in item[1].split(' ') {
+                let pattern = glob::Pattern::new(x.trim())?;
+                patterns.push(pattern);
+            }
 
-            items.push((target, pattern));
+            items.push((target, patterns));
         }
         Ok(Self(items))
     }
@@ -36,10 +40,12 @@ impl Hosts {
         }
 
         self.0.par_iter().find_map_first(|v| {
-            if v.1.matches(domain) {
-                return Some(v.0.to_string());
-            }
-            None
+            v.1.iter().find_map(|x| {
+                if x.matches(domain) {
+                    return Some(v.0.to_string());
+                }
+                None
+            })
         })
     }
 }
@@ -67,6 +73,7 @@ mod tests {
         let s = r"
         127.0.0.1        localhost
         192.168.8.20     *-dev.app.com # glob express
+        192.168.1.1      router  router.com *.router.com
         ";
         let hosts = Hosts::parse(s);
         assert!(hosts.is_ok());
@@ -79,6 +86,18 @@ mod tests {
         let r = hosts.match_domain("test-dev.app.com");
         assert!(r.is_some());
         assert_eq!(r, Some("192.168.8.20".to_string()));
+
+        let r = hosts.match_domain("router");
+        assert!(r.is_some());
+        assert_eq!(r, Some("192.168.1.1".to_string()));
+
+        let r = hosts.match_domain("router.com");
+        assert!(r.is_some());
+        assert_eq!(r, Some("192.168.1.1".to_string()));
+
+        let r = hosts.match_domain("dev.router.com");
+        assert!(r.is_some());
+        assert_eq!(r, Some("192.168.1.1".to_string()));
 
         let r = hosts.match_domain("google.com");
         assert!(r.is_none());
