@@ -1,9 +1,7 @@
-use std::{net::IpAddr, str::FromStr, time::Duration};
-
 use log::{debug, error};
-
 use prometheus::{register_int_counter, IntCounter};
 use rayon::prelude::*;
+use std::{net::IpAddr, str::FromStr, time::Duration};
 use tokio::time::timeout;
 use trust_dns_server::{
     authority::{AuthorityObject, LookupError, LookupObject, LookupOptions},
