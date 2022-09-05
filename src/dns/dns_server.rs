@@ -42,9 +42,7 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
     opts.edns0 = true;
     opts.timeout = Duration::from_secs(2);
     opts.positive_max_ttl = Some(Duration::from_secs(120));
-    opts.positive_min_ttl = Some(Duration::from_secs(60));
     opts.negative_max_ttl = Some(Duration::from_secs(120));
-    opts.negative_min_ttl = Some(Duration::from_secs(120));
 
     let forward_config = ForwardConfig {
         name_servers,

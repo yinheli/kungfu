@@ -131,7 +131,6 @@ impl DnsHandler {
             Ok(v) => {
                 for v in v.iter() {
                     if let Some(v) = v.data() {
-                        println!("{:?}", v);
                         if let Some(v) = v.as_a() {
                             return Some(self.setting.dns_table.allocate(
                                 domain,
