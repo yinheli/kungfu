@@ -24,7 +24,7 @@ notify = "4"
 regex = "1"
 lazy_static = "1"
 chrono = "0.4"
-trust-dns-server = { version = "0.21", features = ["trust-dns-resolver"] }
+trust-dns-server = { version = "0.22", features = ["trust-dns-resolver"] }
 async-trait = "0.1"
 ipnet = "2"
 lru = "0.7"
