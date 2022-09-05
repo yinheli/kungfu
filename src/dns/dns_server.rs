@@ -33,12 +33,11 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 
     // optimize for forward / upstream
     let mut opts = ResolverOpts::default();
-    opts.cache_size = 512;
     opts.attempts = 1;
     opts.check_names = false;
-    opts.use_hosts_file = false;
+    opts.use_hosts_file = true;
     opts.validate = false;
-    opts.num_concurrent_reqs = 4;
+    opts.num_concurrent_reqs = 2;
     opts.try_tcp_on_error = false;
     opts.edns0 = true;
     opts.timeout = Duration::from_secs(2);
@@ -63,6 +62,7 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 
     let mut catalog = Catalog::new();
     catalog.upsert(LowerName::from(Name::root()), Box::new(authority));
+    let catalog = Arc::new(catalog);
 
     let mut server = ServerFuture::new(Handler { catalog });
     log::info!("dns listen port: {}", setting.dns_port);
@@ -141,7 +141,7 @@ impl AuthorityObject for HijackAuthority {
 }
 
 pub struct Handler {
-    catalog: Catalog,
+    catalog: Arc<Catalog>,
 }
 
 #[async_trait::async_trait]
@@ -151,6 +151,9 @@ impl RequestHandler for Handler {
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
-        self.catalog.lookup(request, None, response_handle).await
+        self.catalog
+            .clone()
+            .lookup(request, None, response_handle)
+            .await
     }
 }
