@@ -1,6 +1,6 @@
 use std::{net::IpAddr, str::FromStr, time::Duration};
 
-use log::debug;
+use log::{debug, error};
 
 use prometheus::{register_int_counter, IntCounter};
 use rayon::prelude::*;
@@ -108,24 +108,30 @@ impl DnsHandler {
             .unwrap()
             .match_domain(domain)?;
 
-        let name = Name::from_str(domain).unwrap();
-
         if let Ok(ip) = IpAddr::from_str(&m) {
             return Some(self.setting.dns_table.allocate(domain, Some(ip), "host"));
+        }
+
+        let name = Name::from_str(&m);
+
+        if name.is_err() {
+            return None;
         }
 
         let r = self
             .upstream
             .lookup(
-                &LowerName::new(&name),
+                &LowerName::new(&name.unwrap()),
                 RecordType::A,
                 LookupOptions::default(),
             )
             .await;
+
         match r {
             Ok(v) => {
                 for v in v.iter() {
                     if let Some(v) = v.data() {
+                        println!("{:?}", v);
                         if let Some(v) = v.as_a() {
                             return Some(self.setting.dns_table.allocate(
                                 domain,
@@ -137,7 +143,10 @@ impl DnsHandler {
                 }
                 None
             }
-            Err(_) => None,
+            Err(e) => {
+                error!("{:?}", e);
+                None
+            }
         }
     }
 
