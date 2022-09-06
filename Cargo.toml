@@ -5,8 +5,12 @@ edition = "2021"
 authors = ["yinheli <me@yinheli.com>"]
 keywords = ["dns", "proxy"]
 license = "Apache-2.0"
-description = "Flexible DNS hijacking and proxy tool. Read more: https://github.com/yinheli/kungfu"
+description = """
+Flexible DNS hijacking and proxy tool.
+Read more: https://github.com/yinheli/kungfu
+"""
 repository = "https://github.com/yinheli/kungfu"
+homepage = "https://github.com/yinheli/kungfu"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
