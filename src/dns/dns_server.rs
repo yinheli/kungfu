@@ -58,7 +58,6 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 
     let upstream =
         ForwardAuthority::try_from_config(Name::root(), ZoneType::Forward, &forward_config)
-            .await
             .unwrap();
 
     let upstream = Arc::new(upstream);

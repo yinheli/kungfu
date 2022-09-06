@@ -20,11 +20,11 @@ tokio = { version = "1.20", features = ["full"] }
 serde = "1"
 serde_derive = "1"
 serde_yaml = "0.9"
-notify = "4"
+notify = "5"
 regex = "1"
 lazy_static = "1"
 chrono = "0.4"
-trust-dns-server = { version = "0.21", features = ["trust-dns-resolver"] }
+trust-dns-server = { version = "0.22", features = ["trust-dns-resolver"] }
 async-trait = "0.1"
 ipnet = "2"
 lru = "0.7"
