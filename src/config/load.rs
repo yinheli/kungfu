@@ -14,7 +14,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 pub type ArcSetting = Arc<Setting>;
 
 // holder notify watchers
-static WATCHERS: Mutex<Vec<notify::INotifyWatcher>> = Mutex::new(vec![]);
+static WATCHERS: Mutex<Vec<notify::RecommendedWatcher>> = Mutex::new(vec![]);
 
 pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
     let file = &cli.config;
