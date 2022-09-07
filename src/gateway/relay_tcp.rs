@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+
 use log::warn;
 use lru::LruCache;
 use prometheus::{register_int_counter_vec, IntCounterVec};
@@ -165,16 +166,10 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
         return Some((addr.target, addr.domain, session.dst_port));
     }
 
-    let rules = {
-        let rules = setting.rules.read().unwrap();
-        rules
-            .iter()
-            .filter(|&v| v.rule_type == RuleType::Route)
-            .cloned()
-            .collect::<Vec<_>>()
-    };
+    let rules = setting.rules.read().unwrap();
+    let rules = rules.par_iter().filter(|&v| v.rule_type == RuleType::Route);
 
-    let t = rules.par_iter().find_map_any(|r| {
+    let t = rules.find_map_any(|r| {
         if r.match_cidr(&IpAddr::V4(session.dst_addr)).is_some() {
             return Some(r.target.clone());
         }
@@ -189,8 +184,8 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
 }
 
 async fn copy<'a>(r: &mut ReadHalf<'a>, w: &mut WriteHalf<'a>) -> Result<u64, io::Error> {
-    time::timeout(Duration::from_secs(1), r.readable()).await??;
-    time::timeout(Duration::from_secs(1), w.writable()).await??;
+    time::timeout(Duration::from_millis(200), r.readable()).await??;
+    time::timeout(Duration::from_millis(200), w.writable()).await??;
     let n = io::copy(r, w).await?;
     w.shutdown().await?;
     Ok(n)
