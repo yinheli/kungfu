@@ -41,14 +41,11 @@ pnet = "0.31"
 fast-socks5 = "0.8"
 rand = "0.8"
 url = "2"
-# prometheus = { version = "0.13", features = ["process"] }
-prometheus = { version = "0.13", features = [
-  "process",
-], git = "https://github.com/tikv/rust-prometheus.git", branch = "master" }
+prometheus = { version = "0.13", features = ["process"] }
 hyper = { version = "0.14", features = ["full"] }
 
 [dev-dependencies]
-nu-pretty-hex = "0.67"
+nu-pretty-hex = "0.68"
 
 [profile.release]
 opt-level = 3
