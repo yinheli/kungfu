@@ -19,7 +19,7 @@ pub async fn open_proxy(proxy: String, target: &str, target_port: u16) -> Result
         config.set_skip_auth(false);
 
         Socks5Stream::connect_with_password(
-            proxy,
+            &proxy,
             target_addr,
             target_port,
             url.username().to_string(),
@@ -30,10 +30,16 @@ pub async fn open_proxy(proxy: String, target: &str, target_port: u16) -> Result
     } else {
         config.set_skip_auth(true);
 
-        Socks5Stream::connect(proxy, target_addr, target_port, config).await
+        Socks5Stream::connect(&proxy, target_addr, target_port, config).await
     };
 
-    socket
-        .map(|v| v.get_socket())
-        .map_err(|e| anyhow!("create proxy: {}", e))
+    socket.map(|v| v.get_socket()).map_err(|e| {
+        anyhow!(
+            "create proxy, proxy: {}, target: {}:{}, err: {}",
+            &proxy,
+            target,
+            target_port,
+            e
+        )
+    })
 }
