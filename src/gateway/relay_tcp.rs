@@ -1,9 +1,8 @@
 use std::{
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
     time::Duration,
 };
-
 
 use log::warn;
 use lru::LruCache;
@@ -14,7 +13,7 @@ use tokio::{
     io::{self, AsyncWriteExt},
     net::{
         tcp::{ReadHalf, WriteHalf},
-        TcpListener,
+        TcpListener, TcpStream,
     },
     time,
 };
@@ -47,109 +46,127 @@ impl Relay {
         let setting = self.setting.clone();
 
         tokio::spawn(async move {
-            while let Ok((mut stream, remote_addr)) = server.accept().await {
+            while let Ok((stream, remote_addr)) = server.accept().await {
                 let nat = nat.clone();
                 let setting = setting.clone();
-                tokio::spawn(async move {
-                    let session = nat.find(remote_addr.port());
-                    if session.is_none() {
-                        return;
-                    }
-
-                    let session = session.unwrap();
-
-                    // proxy (name), target host, target port
-                    let target = find_target(setting.clone(), session);
-
-                    if target.is_none() {
-                        return;
-                    }
-
-                    let target = target.unwrap();
-
-                    let proxy = setting.proxy.iter().find(|&v| v.name == target.0);
-
-                    if proxy.is_none() {
-                        warn!("proxy ({}) not found", target.0);
-                        return;
-                    }
-
-                    let proxy = proxy.unwrap();
-                    let proxy_url = random_proxy(&proxy.values);
-
-                    let outbound = open_proxy(proxy_url, &target.1, target.2).await;
-
-                    match outbound {
-                        Ok(mut outbound) => {
-                            let (mut ri, mut wi) = stream.split();
-                            let (mut ro, mut wo) = outbound.split();
-
-                            let client_to_server = copy(&mut ri, &mut wo);
-                            let server_to_client = copy(&mut ro, &mut wi);
-
-                            let result = tokio::try_join!(client_to_server, server_to_client);
-
-                            if let Ok((up, down)) = result {
-                                if setting.metrics.is_some() {
-                                    lazy_static! {
-                                        static ref RELAY_COUNT: IntCounterVec =
-                                            register_int_counter_vec!(
-                                                "relay_total",
-                                                "Number of bytes relay by proxy",
-                                                &["action", "proxy"]
-                                            )
-                                            .unwrap();
-                                        static ref RELAY_HOST_COUNT: IntCounterVec =
-                                            register_int_counter_vec!(
-                                                "relay_host_total",
-                                                "Number of bytes relay by proxy with domain (latest 5k domains)",
-                                                &["action", "proxy", "domain"]
-                                            )
-                                            .unwrap();
-                                        static ref RELAY_COUNT_CACHE: Mutex<LruCache<String, i32>> =
-                                            Mutex::new(LruCache::new(1000));
-                                    }
-
-                                    RELAY_COUNT
-                                        .with_label_values(&["upload", &proxy.name])
-                                        .inc_by(up);
-                                    RELAY_COUNT
-                                        .with_label_values(&["download", &proxy.name])
-                                        .inc_by(down);
-
-                                    RELAY_HOST_COUNT
-                                        .with_label_values(&["upload", &proxy.name, &target.1])
-                                        .inc_by(up);
-                                    RELAY_HOST_COUNT
-                                        .with_label_values(&["download", &proxy.name, &target.1])
-                                        .inc_by(down);
-
-                                    if let Some((v, _)) =
-                                        RELAY_COUNT_CACHE.lock().unwrap().push(target.1.clone(), 1)
-                                    {
-                                        if !v.eq(&target.1) {
-                                            let _ = RELAY_HOST_COUNT.remove_label_values(&[
-                                                "upload",
-                                                &proxy.name,
-                                                &v,
-                                            ]);
-                                            let _ = RELAY_HOST_COUNT.remove_label_values(&[
-                                                "download",
-                                                &proxy.name,
-                                                &v,
-                                            ]);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("open proxy: {}", e);
-                        }
-                    }
-                });
+                tokio::spawn(Relay::proceed(RelayTask {
+                    setting,
+                    nat,
+                    stream,
+                    remote_addr,
+                }));
             }
         });
+    }
+
+    async fn proceed(mut task: RelayTask) {
+        let session = task.nat.find(task.remote_addr.port());
+        if session.is_none() {
+            return;
+        }
+
+        let session = session.unwrap();
+
+        // proxy (name), target host, target port
+        let target = find_target(task.setting.clone(), session);
+
+        if target.is_none() {
+            return;
+        }
+
+        let target = target.unwrap();
+
+        let proxy = task.setting.proxy.iter().find(|&v| v.name == target.0);
+
+        if proxy.is_none() {
+            warn!("proxy ({}) not found", target.0);
+            return;
+        }
+
+        let proxy = proxy.unwrap();
+        let proxy_url = random_proxy(&proxy.values);
+
+        let outbound = open_proxy(proxy_url, &target.1, target.2).await;
+
+        match outbound {
+            Ok(mut outbound) => {
+                let (mut ri, mut wi) = task.stream.split();
+                let (mut ro, mut wo) = outbound.split();
+
+                let client_to_server = copy(&mut ri, &mut wo);
+                let server_to_client = copy(&mut ro, &mut wi);
+
+                let result = tokio::try_join!(client_to_server, server_to_client);
+
+                if let Ok((up, down)) = result {
+                    if task.setting.metrics.is_some() {
+                        lazy_static! {
+                            static ref RELAY_COUNT: IntCounterVec = register_int_counter_vec!(
+                                "relay_total",
+                                "Number of bytes relay by proxy",
+                                &["action", "proxy"]
+                            )
+                            .unwrap();
+                            static ref RELAY_HOST_COUNT: IntCounterVec = register_int_counter_vec!(
+                                "relay_host_total",
+                                "Number of bytes relay by proxy with domain (latest 5k domains)",
+                                &["action", "proxy", "domain"]
+                            )
+                            .unwrap();
+                            static ref RELAY_COUNT_CACHE: Mutex<LruCache<String, i32>> =
+                                Mutex::new(LruCache::new(1000));
+                        }
+
+                        RELAY_COUNT
+                            .with_label_values(&["upload", &proxy.name])
+                            .inc_by(up);
+                        RELAY_COUNT
+                            .with_label_values(&["download", &proxy.name])
+                            .inc_by(down);
+
+                        RELAY_HOST_COUNT
+                            .with_label_values(&["upload", &proxy.name, &target.1])
+                            .inc_by(up);
+                        RELAY_HOST_COUNT
+                            .with_label_values(&["download", &proxy.name, &target.1])
+                            .inc_by(down);
+
+                        if let Some((v, _)) =
+                            RELAY_COUNT_CACHE.lock().unwrap().push(target.1.clone(), 1)
+                        {
+                            if !v.eq(&target.1) {
+                                let _ = RELAY_HOST_COUNT.remove_label_values(&[
+                                    "upload",
+                                    &proxy.name,
+                                    &v,
+                                ]);
+                                let _ = RELAY_HOST_COUNT.remove_label_values(&[
+                                    "download",
+                                    &proxy.name,
+                                    &v,
+                                ]);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("open proxy: {}", e);
+            }
+        }
+    }
+}
+
+struct RelayTask {
+    setting: ArcSetting,
+    nat: Arc<Nat>,
+    stream: TcpStream,
+    remote_addr: SocketAddr,
+}
+
+impl Drop for RelayTask {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown();
     }
 }
 
@@ -184,8 +201,8 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
 }
 
 async fn copy<'a>(r: &mut ReadHalf<'a>, w: &mut WriteHalf<'a>) -> Result<u64, io::Error> {
-    time::timeout(Duration::from_millis(200), r.readable()).await??;
-    time::timeout(Duration::from_millis(200), w.writable()).await??;
+    time::timeout(Duration::from_millis(1000), r.readable()).await??;
+    time::timeout(Duration::from_millis(1000), w.writable()).await??;
     let n = io::copy(r, w).await?;
     w.shutdown().await?;
     Ok(n)
