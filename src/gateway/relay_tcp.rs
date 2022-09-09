@@ -184,8 +184,8 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
 }
 
 async fn copy<'a>(r: &mut ReadHalf<'a>, w: &mut WriteHalf<'a>) -> Result<u64, io::Error> {
-    time::timeout(Duration::from_millis(200), r.readable()).await??;
-    time::timeout(Duration::from_millis(200), w.writable()).await??;
+    time::timeout(Duration::from_millis(1000), r.readable()).await??;
+    time::timeout(Duration::from_millis(1000), w.writable()).await??;
     let n = io::copy(r, w).await?;
     w.shutdown().await?;
     Ok(n)
