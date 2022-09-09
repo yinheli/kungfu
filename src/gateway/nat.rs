@@ -1,13 +1,13 @@
 use lru::LruCache;
 use std::{
     net::{self, Ipv4Addr},
-    sync::RwLock,
+    sync::{Arc, RwLock},
 };
 
 pub struct Nat {
     nat_type: Type,
-    addr_map: RwLock<LruCache<u32, Session>>,
-    port_map: RwLock<LruCache<u16, Session>>,
+    addr_map: RwLock<LruCache<u32, Arc<Session>>>,
+    port_map: RwLock<LruCache<u16, Arc<Session>>>,
 }
 
 pub enum Type {
@@ -17,7 +17,7 @@ pub enum Type {
     Udp,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Copy, PartialEq, Eq, Clone)]
 pub struct Session {
     pub src_addr: Ipv4Addr,
     pub dst_addr: Ipv4Addr,
@@ -45,18 +45,18 @@ impl Nat {
         let addr_key = u32::from_be_bytes(src_addr.octets()) + src_port as u32;
 
         if let Some(session) = self.addr_map.read().unwrap().peek(&addr_key) {
-            return session.clone();
+            return *session.clone();
         }
 
         let nat_port = self.get_available_port();
 
-        let session = Session {
+        let session = Arc::new(Session {
             src_addr,
             dst_addr,
             src_port,
             dst_port,
             nat_port,
-        };
+        });
 
         self.addr_map
             .write()
@@ -68,11 +68,14 @@ impl Nat {
             .unwrap()
             .put(nat_port, session.clone());
 
-        session
+        *session
     }
 
     pub fn find(&self, nat_port: u16) -> Option<Session> {
-        self.port_map.read().unwrap().peek(&nat_port).cloned()
+        if let Some(v) = self.port_map.read().unwrap().peek(&nat_port) {
+            return Some(*v.clone());
+        }
+        None
     }
 
     fn get_available_port(&self) -> u16 {
