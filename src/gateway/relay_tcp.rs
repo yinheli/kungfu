@@ -110,19 +110,19 @@ impl Relay {
                                         .with_label_values(&["download", &proxy.name, &target.1])
                                         .inc_by(down);
 
-                                    if let Some((v, _)) =
+                                    if let Some((k, _)) =
                                         RELAY_COUNT_CACHE.lock().unwrap().push(target.1.clone(), 1)
                                     {
-                                        if !v.eq(&target.1) {
+                                        if !k.eq(&target.1) {
                                             let _ = RELAY_HOST_COUNT.remove_label_values(&[
                                                 "upload",
                                                 &proxy.name,
-                                                &v,
+                                                &k,
                                             ]);
                                             let _ = RELAY_HOST_COUNT.remove_label_values(&[
                                                 "download",
                                                 &proxy.name,
-                                                &v,
+                                                &k,
                                             ]);
                                         }
                                     }
