@@ -9,6 +9,7 @@
     "Hasher",
     "ipnet",
     "kungfu",
+    "nodelay",
     "nsec",
     "pnet",
     "proto",

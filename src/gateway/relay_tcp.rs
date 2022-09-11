@@ -1,7 +1,6 @@
 use std::{
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use log::warn;
@@ -10,12 +9,8 @@ use prometheus::{register_int_counter_vec, IntCounterVec};
 use rand::seq::SliceRandom;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{
-    io::{self, AsyncWriteExt},
-    net::{
-        tcp::{ReadHalf, WriteHalf},
-        TcpListener, TcpStream,
-    },
-    time,
+    io::{copy_bidirectional, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
 };
 
 use crate::{
@@ -90,13 +85,10 @@ impl Relay {
 
         match outbound {
             Ok(mut outbound) => {
-                let (mut ri, mut wi) = task.stream.split();
-                let (mut ro, mut wo) = outbound.split();
+                let _ = task.stream.set_nodelay(true);
+                let _ = outbound.set_nodelay(true);
 
-                let client_to_server = copy(&mut ri, &mut wo);
-                let server_to_client = copy(&mut ro, &mut wi);
-
-                let result = tokio::try_join!(client_to_server, server_to_client);
+                let result = copy_bidirectional(&mut task.stream, &mut outbound).await;
 
                 if let Ok((up, down)) = result {
                     if task.setting.metrics.is_some() {
@@ -198,12 +190,4 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
     }
 
     None
-}
-
-async fn copy<'a>(r: &mut ReadHalf<'a>, w: &mut WriteHalf<'a>) -> Result<u64, io::Error> {
-    time::timeout(Duration::from_millis(1000), r.readable()).await??;
-    time::timeout(Duration::from_millis(1000), w.writable()).await??;
-    let n = io::copy(r, w).await?;
-    w.shutdown().await?;
-    Ok(n)
 }
