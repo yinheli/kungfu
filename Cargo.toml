@@ -3,7 +3,7 @@ name = "kungfu"
 version = "0.1.9"
 edition = "2021"
 authors = ["yinheli <me@yinheli.com>"]
-keywords = ["dns", "proxy"]
+keywords = ["dns", "proxy", "hijacking", "transparent-proxy"]
 license = "Apache-2.0"
 description = """
 Flexible DNS hijacking and proxy tool.
