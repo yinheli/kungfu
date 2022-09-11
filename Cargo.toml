@@ -1,6 +1,6 @@
 [package]
 name = "kungfu"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 authors = ["yinheli <me@yinheli.com>"]
 keywords = ["dns", "proxy"]
