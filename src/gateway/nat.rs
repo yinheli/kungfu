@@ -33,8 +33,8 @@ impl Nat {
     pub fn new(nat_type: Type) -> Self {
         Self {
             nat_type,
-            addr_map: RwLock::new(LruCache::new(1000)),
-            port_map: RwLock::new(LruCache::new(1000)),
+            addr_map: RwLock::new(LruCache::new(500)),
+            port_map: RwLock::new(LruCache::new(500)),
         }
     }
 
@@ -48,7 +48,7 @@ impl Nat {
         let now = Instant::now();
         let addr_key = u32::from_be_bytes(src_addr.octets()) + src_port as u32;
         if let Some(mut session) = self.peek(addr_key) {
-            if now.duration_since(session.create_time).as_secs() > 30 {
+            if now.duration_since(session.create_time).as_secs() > 10 {
                 session.create_time = now;
                 self.put(addr_key, Arc::new(session));
             }

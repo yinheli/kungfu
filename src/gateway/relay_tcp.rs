@@ -41,6 +41,7 @@ impl Relay {
             while let Ok((mut stream, remote_addr)) = server.accept().await {
                 let nat = nat.clone();
                 let setting = setting.clone();
+
                 tokio::spawn(async move {
                     let session = nat.find(remote_addr.port());
                     if session.is_none() {
@@ -142,7 +143,7 @@ impl Relay {
                                         format!("{}:{}", &target.1, target.2),
                                         &target.0,
                                         e,
-                                    )
+                                    );
                                 }
                             }
                         }
@@ -172,16 +173,14 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
     let rules = setting.rules.read().unwrap();
     let rules = rules.par_iter().filter(|&v| v.rule_type == RuleType::Route);
 
-    let t = rules.find_map_any(|r| {
+    rules.find_map_any(|r| {
         if r.match_cidr(&IpAddr::V4(session.dst_addr)).is_some() {
-            return Some(r.target.clone());
+            return Some((
+                r.target.clone(),
+                session.dst_addr.to_string(),
+                session.dst_port,
+            ));
         }
         None
-    });
-
-    if let Some(p) = t {
-        return Some((p, session.dst_addr.to_string(), session.dst_port));
-    }
-
-    None
+    })
 }
