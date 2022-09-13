@@ -2,6 +2,7 @@ use ipnet::IpNet;
 use lru::LruCache;
 use std::{
     net::{IpAddr, Ipv4Addr},
+    num::NonZeroUsize,
     str::FromStr,
     sync::{Mutex, RwLock},
 };
@@ -34,8 +35,8 @@ pub struct Addr {
 impl Default for DnsTable {
     fn default() -> Self {
         Self {
-            domain: RwLock::new(LruCache::new(0)),
-            addr: RwLock::new(LruCache::new(0)),
+            domain: RwLock::new(LruCache::new(NonZeroUsize::new(1).unwrap())),
+            addr: RwLock::new(LruCache::new(NonZeroUsize::new(1).unwrap())),
             network: Default::default(),
             gateway: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             pool_size: Default::default(),
@@ -54,8 +55,8 @@ impl DnsTable {
         let pool_size = hosts.count();
 
         Self {
-            domain: RwLock::new(LruCache::new(DNS_CACHE_SIZE)),
-            addr: RwLock::new(LruCache::new(DNS_CACHE_SIZE)),
+            domain: RwLock::new(LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap())),
+            addr: RwLock::new(LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap())),
             network,
             gateway: network.addr(),
             pool_size,

@@ -1,6 +1,8 @@
 use std::{
     net::IpAddr,
+    num::NonZeroUsize,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use log::warn;
@@ -38,7 +40,7 @@ impl Relay {
         let setting = self.setting.clone();
 
         tokio::spawn(async move {
-            while let Ok((mut stream, remote_addr)) = server.accept().await {
+            while let Ok((stream, remote_addr)) = server.accept().await {
                 let nat = nat.clone();
                 let setting = setting.clone();
 
@@ -74,76 +76,63 @@ impl Relay {
                     match outbound {
                         Ok(mut outbound) => {
                             let _ = stream.set_nodelay(true);
+                            let mut stream = tokio_io_timeout::TimeoutStream::new(stream);
+                            stream.set_read_timeout(Some(Duration::from_secs(30)));
+                            let mut stream = Box::pin(stream);
+
                             let _ = outbound.set_nodelay(true);
 
                             let result = copy_bidirectional(&mut stream, &mut outbound).await;
 
-                            match result {
-                                Ok((up, down)) => {
-                                    if setting.metrics.is_some() {
-                                        lazy_static! {
-                                            static ref RELAY_COUNT: IntCounterVec = register_int_counter_vec!(
-                                                "relay_total",
-                                                "Number of bytes relay by proxy",
-                                                &["action", "proxy"]
-                                            )
-                                            .unwrap();
-                                            static ref RELAY_HOST_COUNT: IntCounterVec = register_int_counter_vec!(
-                                                "relay_host_total",
-                                                "Number of bytes relay by proxy with domain (latest 500 domains)",
-                                                &["action", "proxy", "domain"]
-                                            )
-                                            .unwrap();
-                                            static ref RELAY_COUNT_CACHE: Mutex<LruCache<String, i32>> =
-                                                Mutex::new(LruCache::new(500));
-                                        }
+                            if let Ok((up, down)) = result {
+                                if setting.metrics.is_some() {
+                                    lazy_static! {
+                                        static ref RELAY_COUNT: IntCounterVec = register_int_counter_vec!(
+                                            "relay_total",
+                                            "Number of bytes relay by proxy",
+                                            &["action", "proxy"]
+                                        )
+                                        .unwrap();
+                                        static ref RELAY_HOST_COUNT: IntCounterVec = register_int_counter_vec!(
+                                            "relay_host_total",
+                                            "Number of bytes relay by proxy with domain (latest 500 domains)",
+                                            &["action", "proxy", "domain"]
+                                        )
+                                        .unwrap();
+                                        static ref RELAY_COUNT_CACHE: Mutex<LruCache<String, i32>> =
+                                            Mutex::new(LruCache::new(NonZeroUsize::new(500).unwrap()));
+                                    }
 
-                                        RELAY_COUNT
-                                            .with_label_values(&["upload", &proxy.name])
-                                            .inc_by(up);
-                                        RELAY_COUNT
-                                            .with_label_values(&["download", &proxy.name])
-                                            .inc_by(down);
+                                    RELAY_COUNT
+                                        .with_label_values(&["upload", &proxy.name])
+                                        .inc_by(up);
+                                    RELAY_COUNT
+                                        .with_label_values(&["download", &proxy.name])
+                                        .inc_by(down);
 
-                                        RELAY_HOST_COUNT
-                                            .with_label_values(&["upload", &proxy.name, &target.1])
-                                            .inc_by(up);
-                                        RELAY_HOST_COUNT
-                                            .with_label_values(&[
+                                    RELAY_HOST_COUNT
+                                        .with_label_values(&["upload", &proxy.name, &target.1])
+                                        .inc_by(up);
+                                    RELAY_HOST_COUNT
+                                        .with_label_values(&["download", &proxy.name, &target.1])
+                                        .inc_by(down);
+
+                                    if let Some((k, _)) =
+                                        RELAY_COUNT_CACHE.lock().unwrap().push(target.1.clone(), 1)
+                                    {
+                                        if !k.eq(&target.1) {
+                                            let _ = RELAY_HOST_COUNT.remove_label_values(&[
+                                                "upload",
+                                                &proxy.name,
+                                                &k,
+                                            ]);
+                                            let _ = RELAY_HOST_COUNT.remove_label_values(&[
                                                 "download",
                                                 &proxy.name,
-                                                &target.1,
-                                            ])
-                                            .inc_by(down);
-
-                                        if let Some((k, _)) = RELAY_COUNT_CACHE
-                                            .lock()
-                                            .unwrap()
-                                            .push(target.1.clone(), 1)
-                                        {
-                                            if !k.eq(&target.1) {
-                                                let _ = RELAY_HOST_COUNT.remove_label_values(&[
-                                                    "upload",
-                                                    &proxy.name,
-                                                    &k,
-                                                ]);
-                                                let _ = RELAY_HOST_COUNT.remove_label_values(&[
-                                                    "download",
-                                                    &proxy.name,
-                                                    &k,
-                                                ]);
-                                            }
+                                                &k,
+                                            ]);
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "tcp relay {}, {}, via: {}, err: {:?}",
-                                        format!("{}:{}", session.src_addr, session.src_port),
-                                        format!("{}:{}", &target.1, target.2),
-                                        &target.0,
-                                        e,
-                                    );
                                 }
                             }
                         }

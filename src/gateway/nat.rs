@@ -1,6 +1,7 @@
 use lru::LruCache;
 use std::{
     net::{self, Ipv4Addr},
+    num::NonZeroUsize,
     sync::{Arc, RwLock},
     time::Instant,
 };
@@ -33,8 +34,8 @@ impl Nat {
     pub fn new(nat_type: Type) -> Self {
         Self {
             nat_type,
-            addr_map: RwLock::new(LruCache::new(500)),
-            port_map: RwLock::new(LruCache::new(500)),
+            addr_map: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
+            port_map: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
         }
     }
 
