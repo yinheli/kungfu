@@ -32,11 +32,13 @@ pub struct Addr {
     records: Vec<Record>,
 }
 
+const DNS_CACHE_SIZE: usize = 5000;
+
 impl Default for DnsTable {
     fn default() -> Self {
         Self {
-            domain: RwLock::new(LruCache::new(NonZeroUsize::new(1).unwrap())),
-            addr: RwLock::new(LruCache::new(NonZeroUsize::new(1).unwrap())),
+            domain: RwLock::new(LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap())),
+            addr: RwLock::new(LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap())),
             network: Default::default(),
             gateway: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             pool_size: Default::default(),
@@ -44,8 +46,6 @@ impl Default for DnsTable {
         }
     }
 }
-
-const DNS_CACHE_SIZE: usize = 5000;
 
 impl DnsTable {
     pub fn new(network: &str) -> Self {
