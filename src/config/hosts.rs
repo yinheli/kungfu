@@ -17,6 +17,9 @@ impl Hosts {
                 line = &line[..v];
             }
 
+            // tab to space
+            let line = line.replace("\t", " ");
+
             let item = line.splitn(2, ' ').map(|v| v.trim()).collect::<Vec<_>>();
             if item.len() != 2 {
                 continue;
@@ -74,6 +77,7 @@ mod tests {
         127.0.0.1        localhost
         192.168.8.20     *-dev.app.com # glob express
         192.168.1.1      router  router.com *.router.com
+        192.168.1.2		test.example.com # use tab
         ";
         let hosts = Hosts::parse(s);
         assert!(hosts.is_ok());
@@ -98,6 +102,9 @@ mod tests {
         let r = hosts.match_domain("dev.router.com");
         assert!(r.is_some());
         assert_eq!(r, Some("192.168.1.1".to_string()));
+
+        let r = hosts.match_domain("test.example.com");
+        assert_eq!(r, Some("192.168.1.2".to_string()));
 
         let r = hosts.match_domain("google.com");
         assert!(r.is_none());
