@@ -8,7 +8,7 @@ Flexible DNS hijacking and proxy tool.
 
 - Flexible rules eg. glob patten domain, static routes, response CIDR
 - Host file include /etc/hosts & custom hosts with cname and glob patten supported
-- Observable with prometheus supported (checkout `assets/grafana/kungfu.json`)
+- Observable with prometheus supported
 - Very fast, above 120k QPS (on my develop environment, AMD 5600G)
 
 ## Usage
