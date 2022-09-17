@@ -185,6 +185,7 @@ impl LookupObject for Addr {
 mod tests {
     extern crate test;
     use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
     use test::Bencher;
@@ -254,7 +255,7 @@ mod tests {
             (0..100).into_par_iter().for_each(|i| {
                 table.apply(&format!("{i}.example.com"), "", "");
             })
-        })
+        });
     }
 
     #[bench]
@@ -269,6 +270,6 @@ mod tests {
             (0..100).into_par_iter().for_each(|i| {
                 table.find_by_domain(&format!("{i}.example.com"));
             })
-        })
+        });
     }
 }
