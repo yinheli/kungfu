@@ -18,7 +18,7 @@ impl Hosts {
             }
 
             // tab to space
-            let line = line.replace("\t", " ");
+            let line = line.replace('\t', " ");
 
             let item = line.splitn(2, ' ').map(|v| v.trim()).collect::<Vec<_>>();
             if item.len() != 2 {
