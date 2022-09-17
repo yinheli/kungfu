@@ -54,9 +54,11 @@ impl DnsTable {
         let hosts = network.hosts();
         let pool_size = hosts.count();
 
+        let (domain, addr) = DnsTable::new_cache();
+
         Self {
-            domain: RwLock::new(LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap())),
-            addr: RwLock::new(LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap())),
+            domain: RwLock::new(domain),
+            addr: RwLock::new(addr),
             network,
             gateway: network.addr(),
             pool_size,
@@ -101,9 +103,12 @@ impl DnsTable {
     }
 
     pub fn clear(&self) {
-        self.domain.write().unwrap().clear();
-        self.addr.write().unwrap().clear();
         *self.offset.lock().unwrap() = 0;
+
+        // directly make new one
+        let (domain, addr) = DnsTable::new_cache();
+        *self.domain.write().unwrap() = domain;
+        *self.addr.write().unwrap() = addr;
     }
 
     fn allocate_addr(&self) -> IpAddr {
@@ -120,6 +125,13 @@ impl DnsTable {
             break;
         }
         addr
+    }
+
+    fn new_cache() -> (LruCache<String, Option<Addr>>, LruCache<IpAddr, Addr>) {
+        (
+            LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap()),
+            LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap()),
+        )
     }
 }
 
