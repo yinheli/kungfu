@@ -52,7 +52,7 @@ fn main() {
         .enable_all()
         .thread_name("kungfu-worker")
         .worker_threads(cpu)
-        .thread_stack_size(1024 * 512)
+        .thread_stack_size(1024 * 256)
         .build()
         .unwrap();
 
