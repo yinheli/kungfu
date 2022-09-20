@@ -75,14 +75,14 @@ impl Nat {
 
     pub fn find(&self, nat_port: u16) -> Option<Session> {
         if let Some(v) = self.port_map.read().unwrap().peek(&nat_port) {
-            return Some(*v.clone());
+            return Some(**v);
         }
         None
     }
 
     fn peek(&self, addr_key: u32) -> Option<Session> {
         if let Some(v) = self.addr_map.read().unwrap().peek(&addr_key) {
-            return Some(*v.clone());
+            return Some(**v);
         }
         None
     }
