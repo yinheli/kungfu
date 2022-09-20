@@ -97,13 +97,13 @@ impl Relay {
                                         static ref RELAY_HOST_COUNT: IntCounterVec =
                                             register_int_counter_vec!(
                                             "relay_host_total",
-                                            "Number of bytes relay by domain (latest 200 domains)",
+                                            "Number of bytes relay by domain (latest 100 domains)",
                                             &["action", "domain"]
                                         )
                                             .unwrap();
                                         static ref RELAY_COUNT_CACHE: Mutex<LruCache<String, u8>> =
                                             Mutex::new(LruCache::new(
-                                                NonZeroUsize::new(200).unwrap()
+                                                NonZeroUsize::new(100).unwrap()
                                             ));
                                     }
 
