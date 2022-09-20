@@ -26,7 +26,7 @@ async fn metrics(req: Request<Body>) -> Result<Response<Body>, Infallible> {
         "/metrics" => {
             let encoder = TextEncoder::new();
             let metric_families = prometheus::gather();
-            let mut buffer = vec![];
+            let mut buffer = Vec::with_capacity(1024 * 32);
             encoder.encode(&metric_families, &mut buffer).unwrap();
 
             let response = Response::builder()
