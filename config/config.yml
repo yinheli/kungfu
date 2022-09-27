@@ -19,4 +19,6 @@ proxy:
 
 # prometheus metrics
 # optional
+# with grafana dashboard
+#   https://grafana.com/grafana/dashboards/16998-kungfu/
 # metrics: 0.0.0.0:6080

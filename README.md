@@ -13,4 +13,4 @@ Flexible DNS hijacking and proxy tool.
 
 ## Usage
 
-Please checkout `config` to get started.
+Please checkout `config` to get started. 🎉

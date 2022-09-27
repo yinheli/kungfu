@@ -7,6 +7,7 @@
     "chrono",
     "cpus",
     "edns",
+    "grafana",
     "Hasher",
     "ipnet",
     "kungfu",
