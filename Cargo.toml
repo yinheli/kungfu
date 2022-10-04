@@ -34,7 +34,7 @@ trust-dns-server = { version = "0.22", features = ["trust-dns-resolver"] }
 async-trait = "0.1"
 ipnet = "2"
 lru = "0.8"
-glob = "0.3.0"
+glob = "0.3"
 rayon = "1"
 tun = { version = "0.5", features = ["async"] }
 futures = "0.3"
@@ -48,7 +48,7 @@ hyper = { version = "0.14", features = ["full"] }
 
 
 [dev-dependencies]
-nu-pretty-hex = "0.68"
+nu-pretty-hex = "0.69"
 
 [profile.release]
 opt-level = 3
