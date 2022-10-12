@@ -1,7 +1,7 @@
 use super::hosts::Hosts;
 use super::setting::{Rule, Setting};
 use crate::{cli::Cli, config::DnsTable};
-use anyhow::{anyhow, Error};
+use anyhow::{bail, Error};
 use ipnet::IpNet;
 use log::{debug, error, info};
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -21,7 +21,7 @@ pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
     let path = PathBuf::from(file);
 
     if !path.exists() {
-        anyhow::bail!("file not found {}", file);
+        bail!("file not found {}", file);
     }
 
     let mut setting: Setting =
@@ -171,7 +171,7 @@ fn test_setting(setting: &Setting) -> Result<(), Error> {
     if !setting.proxy.is_empty() {
         for p in setting.proxy.iter() {
             if p.values.iter().any(|v| !v.starts_with("socks5://")) {
-                return Err(anyhow!("proxy only support socks5"));
+                bail!("proxy only support socks5");
             }
         }
     }
@@ -181,7 +181,7 @@ fn test_setting(setting: &Setting) -> Result<(), Error> {
     if setting.metrics.is_some() {
         let addr = setting.metrics.clone();
         if SocketAddr::from_str(&addr.unwrap()).is_err() {
-            return Err(anyhow!("metrics is invalid"));
+            bail!("metrics is invalid");
         }
     }
 
