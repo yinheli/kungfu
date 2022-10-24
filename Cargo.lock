@@ -825,9 +825,9 @@ dependencies = [
 
 [[package]]
 name = "nu-pretty-hex"
-version = "0.69.1"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fa9667e6ddf13e01a5f192caa8570b19f062dfe1fa70af6f28b2ab56c369d57"
+checksum = "f0e6c12ab016eaeb658c8fb94d72710449db838de4627d2c070746b45556b983"
 dependencies = [
  "nu-ansi-term",
  "rand",
