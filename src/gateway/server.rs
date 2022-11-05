@@ -129,11 +129,11 @@ impl Gateway {
             debug!("for macOS manual add net route {}", network);
 
             let _ = Command::new("route")
-                .args(&["-n", "-q", "add", "-net", network, gateway])
+                .args(["-n", "-q", "add", "-net", network, gateway])
                 .output();
 
             let _ = Command::new("networksetup")
-                .args(&["-setdnsservers", "Wi-Fi", "127.0.0.1"])
+                .args(["-setdnsservers", "Wi-Fi", "127.0.0.1"])
                 .output();
         }
 
@@ -142,7 +142,7 @@ impl Gateway {
             use tokio::signal;
             if let Ok(_) = signal::ctrl_c().await {
                 let _ = Command::new("networksetup")
-                    .args(&["-setdnsservers", "Wi-Fi", "empty"])
+                    .args(["-setdnsservers", "Wi-Fi", "empty"])
                     .output();
                 process::exit(0);
             }
@@ -151,7 +151,7 @@ impl Gateway {
         #[cfg(target_os = "linux")]
         {
             let _ = Command::new("ip")
-                .args(&["route", "add", network, "via", gateway])
+                .args(["route", "add", network, "via", gateway])
                 .output();
         }
 
@@ -168,14 +168,14 @@ impl Gateway {
             #[cfg(target_os = "linux")]
             {
                 let _ = Command::new("ip")
-                    .args(&["route", "add", &r, "via", gateway])
+                    .args(["route", "add", &r, "via", gateway])
                     .output();
             }
 
             #[cfg(target_os = "macos")]
             {
                 let _ = Command::new("route")
-                    .args(&["-n", "-q", "add", "-net", &r, gateway])
+                    .args(["-n", "-q", "add", "-net", &r, gateway])
                     .output();
             }
         }
@@ -239,7 +239,7 @@ impl Gateway {
             // build ip packet
 
             let payload = p.packet();
-            let total_len = v4.get_header_length() as usize * 4 + payload.len() as usize;
+            let total_len = v4.get_header_length() as usize * 4 + payload.len();
 
             let mut buf = BytesMut::zeroed(total_len);
 
