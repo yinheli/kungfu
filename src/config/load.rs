@@ -203,6 +203,7 @@ mod test {
         })
         .unwrap();
 
+        assert_eq!(config.bind, "0.0.0.0".to_string());
         assert_eq!(config.dns_port, 53);
         assert_eq!(config.network, "10.89.0.1/16".to_string());
     }

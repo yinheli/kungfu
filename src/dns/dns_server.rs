@@ -68,9 +68,10 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
 
     let mut server = ServerFuture::new(Handler { catalog });
     log::info!("dns listen port: {}", setting.dns_port);
-    server.register_socket(UdpSocket::bind(format!("0.0.0.0:{}", setting.dns_port)).await?);
+    server
+        .register_socket(UdpSocket::bind(format!("{}:{}", setting.bind, setting.dns_port)).await?);
     server.register_listener(
-        TcpListener::bind(format!("0.0.0.0:{}", setting.dns_port)).await?,
+        TcpListener::bind(format!("{}:{}", setting.bind, setting.dns_port)).await?,
         Duration::from_secs(5),
     );
 
