@@ -18,7 +18,7 @@ homepage = "https://github.com/yinheli/kungfu"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
-env_logger = "0.9"
+env_logger = "0.10"
 anyhow = "1"
 num_cpus = "1"
 tokio = { version = "1", features = ["full"] }
@@ -45,10 +45,6 @@ rand = "0.8"
 url = "2"
 prometheus = { version = "0.13", features = ["process"] }
 hyper = { version = "0.14", features = ["full"] }
-
-
-[dev-dependencies]
-nu-pretty-hex = "0.70"
 
 [profile.release]
 opt-level = 3
