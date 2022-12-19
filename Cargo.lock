@@ -764,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "kungfu"
-version = "0.1.13"
+version = "0.1.15"
 dependencies = [
  "anyhow",
  "async-trait",
