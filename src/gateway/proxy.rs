@@ -8,7 +8,7 @@ pub async fn open_proxy(proxy: String, target: &str, target_port: u16) -> Result
     let host = url.host().unwrap();
     let port = url.port().map_or(80, |v| v);
 
-    let proxy = format!("{}:{}", host, port);
+    let proxy = format!("{host}:{port}");
 
     let mut config = Config::default();
     config.set_connect_timeout(5);
