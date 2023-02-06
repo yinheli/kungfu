@@ -39,7 +39,7 @@ rayon = "1"
 tun = { version = "0.5", features = ["async"] }
 futures = "0.3"
 bytes = "1"
-pnet = "0.31"
+pnet = "0.33"
 fast-socks5 = "0.8"
 rand = "0.8"
 url = "2"
