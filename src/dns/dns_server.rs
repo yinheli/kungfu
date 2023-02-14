@@ -1,4 +1,5 @@
 use anyhow::Error;
+use std::net::ToSocketAddrs;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     net::{TcpListener, UdpSocket},
@@ -26,15 +27,18 @@ use crate::config::ArcSetting;
 pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture<Handler>, Error> {
     let mut name_servers = NameServerConfigGroup::with_capacity(setting.dns_upstream.len());
     for upstream in setting.dns_upstream.iter() {
-        let mut ip = &upstream[..];
-        let mut port = 53;
-        if let Some(i) = upstream.find(':') {
-            ip = &upstream[..i];
-            port = upstream[i + 1..].parse().unwrap();
+        let mut upstream = upstream.clone();
+        if !upstream.contains(':') {
+            upstream.push_str(":53")
         }
-        let addr = ip.parse().unwrap();
-        let name_server = NameServerConfigGroup::from_ips_clear(&[addr], port, true);
-        name_servers.merge(name_server);
+
+        if let Ok(addrs) = &upstream[..].to_socket_addrs() {
+            addrs.clone().for_each(|addr| {
+                let name_server =
+                    NameServerConfigGroup::from_ips_clear(&[addr.ip()], addr.port(), true);
+                name_servers.merge(name_server);
+            });
+        }
     }
 
     // optimize for forward / upstream
