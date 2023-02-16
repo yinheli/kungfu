@@ -5,6 +5,9 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]*"
 
+permissions:
+  contents: write
+
 env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
