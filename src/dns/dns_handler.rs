@@ -154,14 +154,14 @@ impl DnsHandler {
             .filter(|&v| v.rule_type == RuleType::ExcludeDomain)
             .collect::<Vec<_>>();
 
-        if let Some(_) = {
-            rules.par_iter().find_map_any(|&r| {
-                if r.match_domain(domain).is_some() {
-                    return Some(());
-                }
-                None
-            })
-        } {
+        let find_exclude = rules.par_iter().find_map_any(|&r| {
+            if r.match_domain(domain).is_some() {
+                return Some(());
+            }
+            None
+        });
+
+        if find_exclude.is_some() {
             return None;
         }
 

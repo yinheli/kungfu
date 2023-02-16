@@ -210,8 +210,8 @@ mod tests {
 
         for _ in 0..2 {
             for (i, host) in hosts.skip(1).enumerate() {
-                let domain = format!("test{}.com", i);
-                let remark = format!("test{}", i);
+                let domain = format!("test{i}.com");
+                let remark = format!("test{i}");
                 let addr = table.apply(&domain, "", &remark);
                 assert_eq!(addr.ip, Some(host));
                 assert!(table.find_by_ip(&host).is_some());
@@ -243,7 +243,7 @@ mod tests {
         let table = DnsTable::new("10.89.0.1/24");
 
         b.iter(|| {
-            table.apply(&format!("example.com"), "", "");
+            table.apply("example.com", "", "");
         })
     }
 
