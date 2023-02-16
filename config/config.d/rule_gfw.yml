@@ -23,6 +23,11 @@
     - "*google.com"
     - "*facebook.com"
 
+# domain exclude pattern base glob
+- type: excludeDomain
+  values:
+    - "www.googletagmanager.com"
+
 # upstream CIDR match
 - type: dnsCidr
   target: hk

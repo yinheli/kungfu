@@ -52,7 +52,7 @@ pub struct Proxy {
 pub struct Rule {
     #[serde(rename = "type")]
     pub rule_type: RuleType,
-    pub target: String,
+    pub target: Option<String>,
     pub values: Vec<String>,
     patterns: Vec<glob::Pattern>,
     cidrs: Vec<IpNet>,
@@ -62,7 +62,7 @@ pub struct Rule {
 struct InnerRule {
     #[serde(rename = "type")]
     pub rule_type: RuleType,
-    pub target: String,
+    pub target: Option<String>,
     pub values: Vec<String>,
 }
 
@@ -127,6 +127,7 @@ impl Rule {
 pub enum RuleType {
     Route,
     Domain,
+    ExcludeDomain,
     DnsGeoIp,
     DnsCidr,
     Unknown(String),
@@ -139,13 +140,16 @@ impl<'de> serde::de::Deserialize<'de> for RuleType {
     {
         let s = String::deserialize(deserializer)?.to_lowercase();
 
+        // spell-checker: disable
         let t = match s.as_str() {
             "route" => RuleType::Route,
-            "domain" => RuleType::Domain, // spell-checker: disable-this-line
+            "domain" => RuleType::Domain,
+            "excludedomain" => RuleType::ExcludeDomain,
             "dnscidr" => RuleType::DnsCidr,
             "dnsgeoip" => RuleType::DnsGeoIp,
             _ => RuleType::Unknown(s),
         };
+        // spell-checker: enable
         Ok(t)
     }
 }

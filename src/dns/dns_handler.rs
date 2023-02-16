@@ -151,14 +151,21 @@ impl DnsHandler {
         let rules = self.setting.rules.read().unwrap();
         let rules = rules
             .iter()
-            .filter(|&v| v.rule_type == RuleType::Domain)
+            .filter(|&v| [RuleType::Domain, RuleType::ExcludeDomain].contains(&v.rule_type))
             .collect::<Vec<_>>();
 
         rules.par_iter().find_map_any(|&r| {
-            if let Some(m) = r.match_domain(domain) {
-                let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, r.target);
+            r.target.as_ref()?;
 
-                let addr = self.setting.dns_table.apply(domain, &r.target, &remark);
+            if let Some(m) = r.match_domain(domain) {
+                if r.rule_type == RuleType::ExcludeDomain {
+                    return None;
+                }
+
+                let target = r.target.as_ref().unwrap();
+                let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, target);
+
+                let addr = self.setting.dns_table.apply(domain, target, &remark);
 
                 return Some(addr);
             }
@@ -204,10 +211,11 @@ impl DnsHandler {
 
         ips.par_iter().find_map_any(|&v| {
             rules.par_iter().find_map_any(|&r| {
+                r.target.as_ref()?;
                 if let Some(m) = r.match_cidr(v) {
-                    let remark =
-                        format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, r.target);
-                    let addr = self.setting.dns_table.apply(domain, &r.target, &remark);
+                    let target = r.target.as_ref().unwrap();
+                    let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, target);
+                    let addr = self.setting.dns_table.apply(domain, target, &remark);
 
                     return Some(addr);
                 }

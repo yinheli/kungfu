@@ -161,9 +161,9 @@ fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String,
     let rules = rules.par_iter().filter(|&v| v.rule_type == RuleType::Route);
 
     rules.find_map_any(|r| {
-        if r.match_cidr(&IpAddr::V4(session.dst_addr)).is_some() {
+        if r.target.is_some() && r.match_cidr(&IpAddr::V4(session.dst_addr)).is_some() {
             return Some((
-                r.target.clone(),
+                r.target.as_ref().unwrap().clone(),
                 session.dst_addr.to_string(),
                 session.dst_port,
             ));
