@@ -20,7 +20,7 @@
 - type: domain
   target: hk
   values:
-    - "*google.com"
+    - "*google*"
     - "*facebook.com"
 
 # domain exclude pattern base glob

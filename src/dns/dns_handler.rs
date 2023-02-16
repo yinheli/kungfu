@@ -151,17 +151,30 @@ impl DnsHandler {
         let rules = self.setting.rules.read().unwrap();
         let rules = rules
             .iter()
-            .filter(|&v| [RuleType::Domain, RuleType::ExcludeDomain].contains(&v.rule_type))
+            .filter(|&v| v.rule_type == RuleType::ExcludeDomain)
+            .collect::<Vec<_>>();
+
+        if let Some(_) = {
+            rules.par_iter().find_map_any(|&r| {
+                if r.match_domain(domain).is_some() {
+                    return Some(());
+                }
+                None
+            })
+        } {
+            return None;
+        }
+
+        let rules = self.setting.rules.read().unwrap();
+        let rules = rules
+            .iter()
+            .filter(|&v| v.rule_type == RuleType::Domain)
             .collect::<Vec<_>>();
 
         rules.par_iter().find_map_any(|&r| {
             r.target.as_ref()?;
 
             if let Some(m) = r.match_domain(domain) {
-                if r.rule_type == RuleType::ExcludeDomain {
-                    return None;
-                }
-
                 let target = r.target.as_ref().unwrap();
                 let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, target);
 

@@ -71,7 +71,7 @@ impl TryFrom<InnerRule> for Rule {
 
     fn try_from(value: InnerRule) -> Result<Self, Self::Error> {
         match value.rule_type {
-            RuleType::Domain => {
+            RuleType::Domain | RuleType::ExcludeDomain => {
                 let values = value.values.clone();
                 let mut patterns = vec![];
                 for x in values.iter() {
