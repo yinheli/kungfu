@@ -33,7 +33,7 @@ chrono = "0.4"
 trust-dns-server = { version = "0.22", features = ["trust-dns-resolver"] }
 async-trait = "0.1"
 ipnet = "2"
-lru = "0.9"
+lru = "0.10"
 glob = "0.3"
 rayon = "1"
 tun = { version = "0.5", features = ["async"] }
