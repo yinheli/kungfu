@@ -29,7 +29,7 @@ fn main() {
     let setting = match config::load(&cli) {
         Ok(s) => s,
         Err(e) => {
-            log::error!("load config file failed, {:?}", e);
+            log::error!("load config file failed, {e:?}");
             process::exit(1);
         }
     };
