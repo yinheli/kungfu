@@ -1,12 +1,8 @@
-use std::{
-    net::IpAddr,
-    num::NonZeroUsize,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use log::warn;
-use lru::LruCache;
+
+use moka::sync::Cache;
 use prometheus::{register_int_counter_vec, IntCounterVec};
 use rand::seq::SliceRandom;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
@@ -101,10 +97,16 @@ impl Relay {
                                             &["action", "domain"]
                                         )
                                             .unwrap();
-                                        static ref RELAY_COUNT_CACHE: Mutex<LruCache<String, u8>> =
-                                            Mutex::new(LruCache::new(
-                                                NonZeroUsize::new(100).unwrap()
-                                            ));
+                                        static ref RELAY_COUNT_CACHE: Cache<String, u8> =
+                                            Cache::builder()
+                                                .max_capacity(100)
+                                                .eviction_listener(|k: Arc<String>, _, _| {
+                                                    let _ = RELAY_HOST_COUNT
+                                                        .remove_label_values(&["upload", &k]);
+                                                    let _ = RELAY_HOST_COUNT
+                                                        .remove_label_values(&["download", &k]);
+                                                })
+                                                .build();
                                     }
 
                                     RELAY_COUNT
@@ -121,16 +123,7 @@ impl Relay {
                                         .with_label_values(&["download", &target.1])
                                         .inc_by(down);
 
-                                    if let Some((k, _)) =
-                                        RELAY_COUNT_CACHE.lock().unwrap().push(target.1.clone(), 0)
-                                    {
-                                        if !k.eq(&target.1) {
-                                            let _ = RELAY_HOST_COUNT
-                                                .remove_label_values(&["upload", &k]);
-                                            let _ = RELAY_HOST_COUNT
-                                                .remove_label_values(&["download", &k]);
-                                        }
-                                    }
+                                    RELAY_COUNT_CACHE.insert(target.1.clone(), 0);
                                 }
                             }
                         }

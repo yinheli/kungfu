@@ -1,10 +1,9 @@
 use ipnet::IpNet;
-use lru::LruCache;
+use moka::sync::Cache;
 use std::{
     net::{IpAddr, Ipv4Addr},
-    num::NonZeroUsize,
     str::FromStr,
-    sync::{Mutex, RwLock},
+    sync::Mutex,
 };
 use trust_dns_server::{
     authority::LookupObject,
@@ -14,8 +13,8 @@ use trust_dns_server::{
 
 #[derive(Debug)]
 pub struct DnsTable {
-    domain: RwLock<LruCache<String, Option<Addr>>>,
-    addr: RwLock<LruCache<IpAddr, Addr>>,
+    domain: Cache<String, Option<Addr>>,
+    addr: Cache<IpAddr, Addr>,
     network: IpNet,
     gateway: IpAddr,
     pool_size: usize,
@@ -32,13 +31,14 @@ pub struct Addr {
     records: Vec<Record>,
 }
 
-const DNS_CACHE_SIZE: usize = 5000;
+const DNS_CACHE_SIZE: u64 = 2000;
 
 impl Default for DnsTable {
     fn default() -> Self {
+        let (domain, addr) = DnsTable::new_cache();
         Self {
-            domain: RwLock::new(LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap())),
-            addr: RwLock::new(LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap())),
+            domain,
+            addr,
             network: Default::default(),
             gateway: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             pool_size: Default::default(),
@@ -57,8 +57,8 @@ impl DnsTable {
         let (domain, addr) = DnsTable::new_cache();
 
         Self {
-            domain: RwLock::new(domain),
-            addr: RwLock::new(addr),
+            domain,
+            addr,
             network,
             gateway: network.addr(),
             pool_size,
@@ -71,44 +71,36 @@ impl DnsTable {
         let ip = self.allocate_addr();
         let addr = Addr::new(domain, Some(ip), target, remark);
 
-        self.domain
-            .write()
-            .unwrap()
-            .put(domain.to_string(), Some(addr.clone()));
-        self.addr.write().unwrap().put(ip, addr.clone());
+        self.domain.insert(domain.to_string(), Some(addr.clone()));
+        self.addr.insert(ip, addr.clone());
 
         addr
     }
 
     /// find addr by ip
     pub fn find_by_ip(&self, ip: &IpAddr) -> Option<Addr> {
-        self.addr.read().unwrap().peek(ip).cloned()
+        self.addr.get(ip)
     }
 
     pub fn find_by_domain(&self, domain: &str) -> Option<Option<Addr>> {
-        let addr = self.domain.read().unwrap().peek(domain).cloned();
+        let addr = self.domain.get(domain);
         if addr.is_none() {
-            self.domain.write().unwrap().put(domain.to_string(), None);
+            self.domain.insert(domain.to_string(), None);
         }
         addr
     }
 
     pub fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Addr {
         let addr = Addr::new(domain, ip, "", remark);
-        self.domain
-            .write()
-            .unwrap()
-            .put(domain.to_string(), Some(addr.clone()));
+        self.domain.insert(domain.to_string(), Some(addr.clone()));
         addr
     }
 
     pub fn clear(&self) {
         *self.offset.lock().unwrap() = 0;
 
-        // directly make new one
-        let (domain, addr) = DnsTable::new_cache();
-        *self.domain.write().unwrap() = domain;
-        *self.addr.write().unwrap() = addr;
+        self.domain.invalidate_all();
+        self.addr.invalidate_all();
     }
 
     fn allocate_addr(&self) -> IpAddr {
@@ -127,10 +119,10 @@ impl DnsTable {
         addr
     }
 
-    fn new_cache() -> (LruCache<String, Option<Addr>>, LruCache<IpAddr, Addr>) {
+    fn new_cache() -> (Cache<String, Option<Addr>>, Cache<IpAddr, Addr>) {
         (
-            LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap()),
-            LruCache::new(NonZeroUsize::new(DNS_CACHE_SIZE).unwrap()),
+            Cache::builder().max_capacity(DNS_CACHE_SIZE).build(),
+            Cache::builder().max_capacity(DNS_CACHE_SIZE).build(),
         )
     }
 }

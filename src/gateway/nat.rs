@@ -1,15 +1,15 @@
-use lru::LruCache;
 use std::{
     net::{self, Ipv4Addr},
-    num::NonZeroUsize,
-    sync::{Arc, RwLock},
-    time::Instant,
+    sync::Arc,
+    time::{Duration, Instant},
 };
+
+use moka::sync::Cache;
 
 pub struct Nat {
     nat_type: Type,
-    addr_map: RwLock<LruCache<u32, Arc<Session>>>,
-    port_map: RwLock<LruCache<u16, Arc<Session>>>,
+    addr_map: Cache<u32, Arc<Session>>,
+    port_map: Cache<u16, Arc<Session>>,
 }
 
 pub enum Type {
@@ -32,10 +32,18 @@ pub struct Session {
 
 impl Nat {
     pub fn new(nat_type: Type) -> Self {
+        let cache_size = 2000;
+        let idle = Duration::from_secs(10 * 60);
         Self {
             nat_type,
-            addr_map: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
-            port_map: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
+            addr_map: Cache::builder()
+                .max_capacity(cache_size)
+                .time_to_idle(idle)
+                .build(),
+            port_map: Cache::builder()
+                .max_capacity(cache_size)
+                .time_to_idle(idle)
+                .build(),
         }
     }
 
@@ -74,29 +82,22 @@ impl Nat {
     }
 
     pub fn find(&self, nat_port: u16) -> Option<Session> {
-        if let Some(v) = self.port_map.read().unwrap().peek(&nat_port) {
-            return Some(**v);
+        if let Some(v) = self.port_map.get(&nat_port) {
+            return Some(*v);
         }
         None
     }
 
     fn peek(&self, addr_key: u32) -> Option<Session> {
-        if let Some(v) = self.addr_map.read().unwrap().peek(&addr_key) {
-            return Some(**v);
+        if let Some(v) = self.addr_map.get(&addr_key) {
+            return Some(*v);
         }
         None
     }
 
     fn put(&self, addr_key: u32, session: Arc<Session>) {
-        self.addr_map
-            .write()
-            .unwrap()
-            .put(addr_key, session.clone());
-
-        self.port_map
-            .write()
-            .unwrap()
-            .put(session.nat_port, session.clone());
+        self.addr_map.insert(addr_key, session.clone());
+        self.port_map.insert(session.nat_port, session.clone());
     }
 
     fn get_available_port(&self) -> u16 {
