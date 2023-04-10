@@ -33,16 +33,16 @@ pub struct Session {
 impl Nat {
     pub fn new(nat_type: Type) -> Self {
         let cache_size = 2000;
-        let idle = Duration::from_secs(10 * 60);
+        let ttl = Duration::from_secs(10 * 60);
         Self {
             nat_type,
             addr_map: Cache::builder()
                 .max_capacity(cache_size)
-                .time_to_idle(idle)
+                .time_to_live(ttl)
                 .build(),
             port_map: Cache::builder()
                 .max_capacity(cache_size)
-                .time_to_idle(idle)
+                .time_to_live(ttl)
                 .build(),
         }
     }
