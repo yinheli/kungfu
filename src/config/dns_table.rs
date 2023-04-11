@@ -4,6 +4,7 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     str::FromStr,
     sync::Mutex,
+    time::Duration,
 };
 use trust_dns_server::{
     authority::LookupObject,
@@ -31,7 +32,7 @@ pub struct Addr {
     records: Vec<Record>,
 }
 
-const DNS_CACHE_SIZE: u64 = 2000;
+const DNS_CACHE_SIZE: u64 = 5000;
 
 impl Default for DnsTable {
     fn default() -> Self {
@@ -83,11 +84,7 @@ impl DnsTable {
     }
 
     pub fn find_by_domain(&self, domain: &str) -> Option<Option<Addr>> {
-        let addr = self.domain.get(domain);
-        if addr.is_none() {
-            self.domain.insert(domain.to_string(), None);
-        }
-        addr
+        self.domain.get(domain)
     }
 
     pub fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Addr {
@@ -120,9 +117,16 @@ impl DnsTable {
     }
 
     fn new_cache() -> (Cache<String, Option<Addr>>, Cache<IpAddr, Addr>) {
+        let idle = Duration::from_secs(60 * 60);
         (
-            Cache::builder().max_capacity(DNS_CACHE_SIZE).build(),
-            Cache::builder().max_capacity(DNS_CACHE_SIZE).build(),
+            Cache::builder()
+                .max_capacity(DNS_CACHE_SIZE)
+                .time_to_idle(idle)
+                .build(),
+            Cache::builder()
+                .max_capacity(DNS_CACHE_SIZE)
+                .time_to_idle(idle)
+                .build(),
         )
     }
 }

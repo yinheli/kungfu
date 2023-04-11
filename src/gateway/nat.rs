@@ -1,7 +1,7 @@
 use std::{
     net::{self, Ipv4Addr},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use moka::sync::Cache;
@@ -26,14 +26,12 @@ pub struct Session {
     pub src_port: u16,
     pub dst_port: u16,
     pub nat_port: u16,
-
-    create_time: Instant,
 }
 
 impl Nat {
     pub fn new(nat_type: Type) -> Self {
-        let cache_size = 2000;
-        let ttl = Duration::from_secs(10 * 60);
+        let cache_size = 5000;
+        let ttl = Duration::from_secs(60 * 10);
         Self {
             nat_type,
             addr_map: Cache::builder()
@@ -54,15 +52,9 @@ impl Nat {
         dst_addr: Ipv4Addr,
         dst_port: u16,
     ) -> Session {
-        let now = Instant::now();
         let addr_key = u32::from_be_bytes(src_addr.octets()) + src_port as u32;
-        if let Some(mut session) = self.peek(addr_key) {
-            if now.duration_since(session.create_time).as_secs() > 10 {
-                session.create_time = now;
-                self.put(addr_key, Arc::new(session));
-            }
-
-            return session;
+        if let Some(session) = self.addr_map.get(&addr_key) {
+            return *session;
         }
 
         let nat_port = self.get_available_port();
@@ -73,7 +65,6 @@ impl Nat {
             src_port,
             dst_port,
             nat_port,
-            create_time: now,
         });
 
         self.put(addr_key, session.clone());
@@ -83,13 +74,6 @@ impl Nat {
 
     pub fn find(&self, nat_port: u16) -> Option<Session> {
         if let Some(v) = self.port_map.get(&nat_port) {
-            return Some(*v);
-        }
-        None
-    }
-
-    fn peek(&self, addr_key: u32) -> Option<Session> {
-        if let Some(v) = self.addr_map.get(&addr_key) {
             return Some(*v);
         }
         None
