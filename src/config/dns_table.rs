@@ -94,8 +94,6 @@ impl DnsTable {
     }
 
     pub fn clear(&self) {
-        *self.offset.lock().unwrap() = 0;
-
         self.domain.invalidate_all();
         self.addr.invalidate_all();
     }
