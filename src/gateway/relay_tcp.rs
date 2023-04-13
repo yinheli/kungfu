@@ -43,6 +43,7 @@ impl Relay {
                 tokio::spawn(async move {
                     let session = nat.find(remote_addr.port());
                     if session.is_none() {
+                        warn!("nat not found, {}", remote_addr);
                         return;
                     }
 
@@ -52,6 +53,7 @@ impl Relay {
                     let target = find_target(setting.clone(), session);
 
                     if target.is_none() {
+                        warn!("target not found, {:?}", session);
                         return;
                     }
 

@@ -84,7 +84,14 @@ impl DnsTable {
     }
 
     pub fn find_by_domain(&self, domain: &str) -> Option<Option<Addr>> {
-        self.domain.get(domain)
+        let r = self.domain.get(domain);
+
+        // also touch addr reference via ip if exists, to keep addr cache alive
+        if let Some(Some(Addr { ip: Some(ip), .. })) = r {
+            self.addr.get(&ip);
+        }
+
+        r
     }
 
     pub fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Addr {
