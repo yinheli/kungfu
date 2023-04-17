@@ -95,14 +95,14 @@ impl Relay {
                                         static ref RELAY_HOST_COUNT: IntCounterVec =
                                             register_int_counter_vec!(
                                             "relay_host_total",
-                                            "Number of bytes relay by domain (latest 200 domains)",
+                                            "Number of bytes relay by domain (latest 100 domains)",
                                             &["action", "domain"]
                                         )
                                             .unwrap();
                                         static ref RELAY_COUNT_CACHE: Cache<String, u8> =
                                             Cache::builder()
-                                                .max_capacity(200)
-                                                .time_to_idle(Duration::from_secs(60 * 60))
+                                                .max_capacity(100)
+                                                .time_to_live(Duration::from_secs(60))
                                                 .eviction_listener(|k: Arc<String>, _, c| {
                                                     if c.was_evicted() {
                                                         let _ = RELAY_HOST_COUNT

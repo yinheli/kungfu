@@ -32,7 +32,7 @@ pub struct Addr {
     records: Vec<Record>,
 }
 
-const DNS_CACHE_SIZE: u64 = 5000;
+const DNS_CACHE_SIZE: u64 = 2000;
 
 impl Default for DnsTable {
     fn default() -> Self {
@@ -80,7 +80,11 @@ impl DnsTable {
 
     /// find addr by ip
     pub fn find_by_ip(&self, ip: &IpAddr) -> Option<Addr> {
-        self.addr.get(ip)
+        let r = self.addr.get(ip);
+        if let Some(addr) = &r {
+            self.domain.get(&addr.domain);
+        }
+        r
     }
 
     pub fn find_by_domain(&self, domain: &str) -> Option<Option<Addr>> {
@@ -122,7 +126,7 @@ impl DnsTable {
     }
 
     fn new_cache() -> (Cache<String, Option<Addr>>, Cache<IpAddr, Addr>) {
-        let idle = Duration::from_secs(60 * 60);
+        let idle = Duration::from_secs(60 * 10);
         (
             Cache::builder()
                 .max_capacity(DNS_CACHE_SIZE)
