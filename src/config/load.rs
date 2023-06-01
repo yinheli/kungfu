@@ -4,17 +4,22 @@ use crate::{cli::Cli, config::DnsTable};
 use anyhow::{bail, Error};
 use ipnet::IpNet;
 use log::{debug, error, info};
-use notify::{EventKind, RecursiveMode, Watcher};
+use notify::RecursiveMode;
 use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::Mutex;
-use std::{fs, path::PathBuf, sync::Arc};
+use std::time::Duration;
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 pub type ArcSetting = Arc<Setting>;
 
 // holder notify watchers
-static WATCHERS: Mutex<Vec<notify::RecommendedWatcher>> = Mutex::new(vec![]);
+static WATCHERS: Mutex<Vec<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>> =
+    Mutex::new(vec![]);
 
 pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
     let file = &cli.config;
@@ -118,47 +123,45 @@ fn watch(setting: ArcSetting, rules_dir: PathBuf) {
 
     let dir = rules_dir.clone();
 
-    let mut watcher =
-        notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
-            Ok(event) => match event.kind {
-                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                    if let Some(file) = event
-                        .paths
-                        .iter()
-                        .find(|&v| v.file_name().eq(&Some(OsStr::new("hosts"))))
-                    {
-                        info!("reload hosts");
-                        if let Err(e) = load_hosts(&setting.clone(), file.clone()) {
-                            error!("load hosts error: {:?}", e);
-                        }
-                    }
+    let event_handler = move |event: notify_debouncer_mini::DebounceEventResult| {
+        if let Err(e) = load_all_rules(&setting.clone(), rules_dir.clone()) {
+            error!("load rules error: {:?}", e);
+        }
 
-                    let rules_update = event.paths.iter().any(|v| {
-                        let ext = v.extension();
-                        if let Some(v) = ext {
-                            return v == "yaml" || v == "yml";
-                        }
-                        false
-                    });
-
-                    if rules_update {
-                        info!("reload rules");
-                        if let Err(e) = load_all_rules(&setting.clone(), rules_dir.clone()) {
-                            error!("load rules error: {:?}", e);
-                        }
+        if let Ok(evs) = event {
+            evs.iter().for_each(|v| {
+                if v.path.file_name().eq(&Some(OsStr::new("hosts"))) {
+                    info!("reload hosts: {:?}", v.path);
+                    if let Err(e) = load_hosts(&setting.clone(), v.path.clone()) {
+                        error!("load hosts error: {:?}", e);
                     }
                 }
-                _ => {}
-            },
-            Err(e) => error!("watch rules error: {:?}", e),
-        })
-        .unwrap();
+            });
 
-    watcher
-        .watch(dir.as_path(), RecursiveMode::NonRecursive)
-        .expect("watch rule dir error");
+            let rules = evs.iter().any(|v| {
+                let ext = v.path.extension();
+                if let Some(v) = ext {
+                    return v == "yaml" || v == "yml";
+                }
+                false
+            });
 
-    WATCHERS.lock().unwrap().push(watcher);
+            if rules {
+                info!("reload rules");
+                if let Err(e) = load_all_rules(&setting.clone(), rules_dir.clone()) {
+                    error!("load rules error: {:?}", e);
+                }
+            }
+        }
+    };
+
+    let timeout = Duration::from_secs(2);
+    let mut deboncer =
+        notify_debouncer_mini::new_debouncer(timeout, Some(timeout), event_handler).unwrap();
+
+    let w = deboncer.watcher();
+    w.watch(dir.as_path(), RecursiveMode::NonRecursive).unwrap();
+    WATCHERS.lock().unwrap().push(deboncer);
 }
 
 fn test_setting(setting: &Setting) -> Result<(), Error> {
