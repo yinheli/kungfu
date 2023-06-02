@@ -49,6 +49,9 @@ hyper = { version = "0.14", features = ["full"] }
 
 [profile.release]
 opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
 lto = true
 strip = true
 codegen-units = 1
