@@ -74,8 +74,9 @@ impl Relay {
                     match outbound {
                         Ok(mut outbound) => {
                             let _ = stream.set_nodelay(true);
+                            // TODO optimize this with idle timeout
                             let mut stream = tokio_io_timeout::TimeoutStream::new(stream);
-                            stream.set_read_timeout(Some(Duration::from_secs(30)));
+                            stream.set_read_timeout(Some(Duration::from_secs(3600 * 2)));
                             let mut stream = Box::pin(stream);
 
                             let _ = outbound.set_nodelay(true);
