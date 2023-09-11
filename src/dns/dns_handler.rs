@@ -5,10 +5,9 @@ use std::{net::IpAddr, str::FromStr, time::Duration};
 use tokio::time::timeout;
 use trust_dns_server::{
     authority::{AuthorityObject, LookupError, LookupObject, LookupOptions},
-    client::rr::LowerName,
     proto::{
         op::ResponseCode,
-        rr::{RData, RecordType},
+        rr::{LowerName, RData, RecordType},
     },
     resolver::Name,
     server::RequestInfo,
@@ -132,7 +131,7 @@ impl DnsHandler {
                         if let Some(v) = v.as_a() {
                             return Some(self.setting.dns_table.allocate(
                                 domain,
-                                Some(IpAddr::V4(*v)),
+                                Some(IpAddr::V4(**v)),
                                 "host",
                             ));
                         }
@@ -211,7 +210,7 @@ impl DnsHandler {
             .map(|v| {
                 if let Some(v) = v.data() {
                     let r = match v {
-                        RData::A(v) => Some(IpAddr::V4(*v)),
+                        RData::A(v) => Some(IpAddr::V4(**v)),
                         _ => None,
                     };
                     return r;

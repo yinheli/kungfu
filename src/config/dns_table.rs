@@ -8,7 +8,10 @@ use std::{
 };
 use trust_dns_server::{
     authority::LookupObject,
-    proto::rr::{rdata::TXT, RData, Record},
+    proto::rr::{
+        rdata::{A, AAAA, TXT},
+        RData, Record,
+    },
     resolver::Name,
 };
 
@@ -148,8 +151,10 @@ impl Addr {
 
         if let Some(ip) = ip {
             let record = match ip {
-                std::net::IpAddr::V4(v) => Record::from_rdata(name.clone(), 10, RData::A(v)),
-                std::net::IpAddr::V6(v) => Record::from_rdata(name.clone(), 10, RData::AAAA(v)),
+                std::net::IpAddr::V4(v) => Record::from_rdata(name.clone(), 10, RData::A(A(v))),
+                std::net::IpAddr::V6(v) => {
+                    Record::from_rdata(name.clone(), 10, RData::AAAA(AAAA(v)))
+                }
             };
             records.push(record);
         }

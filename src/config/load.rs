@@ -156,8 +156,7 @@ fn watch(setting: ArcSetting, rules_dir: PathBuf) {
     };
 
     let timeout = Duration::from_secs(2);
-    let mut deboncer =
-        notify_debouncer_mini::new_debouncer(timeout, Some(timeout), event_handler).unwrap();
+    let mut deboncer = notify_debouncer_mini::new_debouncer(timeout, event_handler).unwrap();
 
     let w = deboncer.watcher();
     w.watch(dir.as_path(), RecursiveMode::NonRecursive).unwrap();

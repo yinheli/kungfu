@@ -5,12 +5,12 @@ use tokio::{
     net::{TcpListener, UdpSocket},
     time,
 };
+use trust_dns_server::proto::rr::LowerName;
 use trust_dns_server::{
     authority::{
         AuthorityObject, Catalog, LookupError, LookupObject, LookupOptions, MessageRequest,
         UpdateResult, ZoneType,
     },
-    client::rr::LowerName,
     proto::{op::ResponseCode, rr::RecordType},
     resolver::{
         config::{NameServerConfigGroup, ResolverOpts},
