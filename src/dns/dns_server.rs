@@ -5,8 +5,8 @@ use tokio::{
     net::{TcpListener, UdpSocket},
     time,
 };
-use trust_dns_server::proto::rr::LowerName;
-use trust_dns_server::{
+use hickory_server::proto::rr::LowerName;
+use hickory_server::{
     authority::{
         AuthorityObject, Catalog, LookupError, LookupObject, LookupOptions, MessageRequest,
         UpdateResult, ZoneType,

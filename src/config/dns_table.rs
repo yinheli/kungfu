@@ -6,7 +6,7 @@ use std::{
     sync::Mutex,
     time::Duration,
 };
-use trust_dns_server::{
+use hickory_server::{
     authority::LookupObject,
     proto::rr::{
         rdata::{A, AAAA, TXT},

@@ -3,7 +3,7 @@ use prometheus::{register_int_counter, IntCounter};
 use rayon::prelude::*;
 use std::{net::IpAddr, str::FromStr, time::Duration};
 use tokio::time::timeout;
-use trust_dns_server::{
+use hickory_server::{
     authority::{AuthorityObject, LookupError, LookupObject, LookupOptions},
     proto::{
         op::ResponseCode,
