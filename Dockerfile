@@ -1,14 +1,14 @@
-FROM rust:1.74-bullseye as builder
+FROM rust:1.75-bookworm as builder
 WORKDIR /workspace
 COPY . .
 RUN rustup override set nightly
 RUN cargo build --release
 
-FROM debian:11-slim
+FROM debian:bookworm-slim
 LABEL org.opencontainers.image.authors "yinheli"
 LABEL org.opencontainers.image.source https://github.com/yinheli/kungfu
-RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org/debian-security|mirrors.ustc.edu.cn/debian-security|g' /etc/apt/sources.list && \
+RUN sed -i 's|deb.debian.org|mirrors.ustc.edu.cn|g' /etc/apt/sources.list && \
+    sed -i 's|security.debian.org|mirrors.ustc.edu.cn|g' /etc/apt/sources.list && \
     apt-get update && apt-get install -y iptables
 RUN apt-get clean autoclean && apt-get autoremove --yes && rm -rf /var/lib/apt/lists/*
 RUN mkdir /app
