@@ -1,13 +1,13 @@
 use log::{debug, error};
 use prometheus::{register_int_counter, IntCounter};
 use rayon::prelude::*;
-use std::{net::IpAddr, str::FromStr, time::Duration};
+use std::{net::IpAddr, str::FromStr, sync::Arc, time::Duration};
 use tokio::time::timeout;
 use hickory_server::{
-    authority::{AuthorityObject, LookupError, LookupObject, LookupOptions},
+    authority::{AuthLookup, AuthorityObject, LookupError, LookupObject, LookupOptions, LookupRecords},
     proto::{
         op::ResponseCode,
-        rr::{LowerName, RData, RecordType},
+        rr::{rdata::{PTR}, LowerName, RData, RecordSet, RecordType},
     },
     resolver::Name,
     server::RequestInfo,
@@ -47,6 +47,21 @@ impl DnsHandler {
                     register_int_counter!("dns_query_total", "Number of dns query").unwrap();
             }
             DNS_QUERY.inc();
+        }
+
+        if query.query_type() == RecordType::PTR {
+            let domain = domain.replace(".in-addr.arpa", "");
+            let ip = domain.split('.').collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(".");
+            if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+                if let Some(v) = self.setting.dns_table.find_by_ip(&addr) {
+                    let mut records = RecordSet::with_ttl(query.name().into(), RecordType::PTR, 10);
+                    let ptr = format!("{}.{}", domain, v.domain);
+                    records.add_rdata(RData::PTR(PTR(Name::from_str(&ptr).unwrap())));
+                    let answers = LookupRecords::new(Default::default(), Arc::new(records));
+                    let result = AuthLookup::answers(answers, None);
+                    return Ok(Box::new(result));
+                }
+            }
         }
 
         let mut matching_rules = false;

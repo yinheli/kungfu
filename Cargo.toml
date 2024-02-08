@@ -1,6 +1,6 @@
 [package]
 name = "kungfu"
-version = "0.1.24"
+version = "0.1.25"
 edition = "2021"
 authors = ["yinheli <me@yinheli.com>"]
 keywords = ["dns", "proxy", "hijacking", "transparent-proxy"]
@@ -18,13 +18,12 @@ homepage = "https://github.com/yinheli/kungfu"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
-env_logger = "0.10"
+env_logger = "0.11"
 anyhow = "1"
 num_cpus = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-io-timeout = "1"
-serde = "1"
-serde_derive = "1"
+serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 notify = "6"
 notify-debouncer-mini = "0.4"

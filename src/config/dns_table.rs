@@ -1,10 +1,7 @@
 use ipnet::IpNet;
 use moka::sync::Cache;
 use std::{
-    net::{IpAddr, Ipv4Addr},
-    str::FromStr,
-    sync::Mutex,
-    time::Duration,
+    fmt::{Display, Formatter}, net::{IpAddr, Ipv4Addr}, str::FromStr, sync::Mutex, time::Duration
 };
 use hickory_server::{
     authority::LookupObject,
@@ -189,6 +186,17 @@ impl LookupObject for Addr {
     fn take_additionals(&mut self) -> Option<Box<dyn LookupObject>> {
         None
     }
+}
+
+impl Display for Addr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Addr {{ domain: {}, ip: {:?}, target: {}, remark: {} }}",
+            self.domain, self.ip, self.target, self.remark
+        )
+    }
+
 }
 
 #[cfg(test)]
