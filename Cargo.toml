@@ -47,11 +47,11 @@ prometheus = { version = "0.13", features = ["process"] }
 hyper = { version = "0.14", features = ["full"] }
 
 [profile.release]
-opt-level = 3
+opt-level = 'z'
 debug = false
 debug-assertions = false
 overflow-checks = false
-lto = true
+lto = 'fat'
 strip = true
 codegen-units = 1
 panic = 'abort'
