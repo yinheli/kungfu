@@ -1,7 +1,7 @@
 FROM rust:1.75-bookworm as builder
-WORKDIR /workspace
-COPY . .
+WORKDIR /app
 RUN rustup override set nightly
+COPY . .
 RUN cargo build --release
 
 FROM debian:bookworm-slim
@@ -12,7 +12,7 @@ RUN apt-get update && \
     apt-get clean autoclean && apt-get autoremove --yes && rm -rf /var/lib/apt/lists/*
 RUN mkdir /app
 WORKDIR /app
-COPY --from=builder /workspace/target/release/kungfu .
-COPY --from=builder /workspace/config config
+COPY --from=builder /app/target/release/kungfu .
+COPY --from=builder /app/config config
 EXPOSE 53/udp 53/tcp
 CMD ./kungfu
