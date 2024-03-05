@@ -100,8 +100,6 @@ impl Nat {
 
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
-
     use super::*;
 
     #[test]
