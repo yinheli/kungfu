@@ -63,7 +63,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup | Rust
         uses: dtolnay/rust-toolchain@nightly
