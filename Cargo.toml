@@ -44,7 +44,9 @@ fast-socks5 = "0.9"
 rand = "0.8"
 url = "2"
 prometheus = { version = "0.13", features = ["process"] }
-hyper = { version = "0.14", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
 
 [profile.release]
 opt-level = 'z'
