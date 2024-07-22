@@ -1,10 +1,10 @@
-FROM rust:1.75-bookworm as builder
+FROM --platform=$BUILDPLATFORM rust:1.75-bookworm as builder
 WORKDIR /app
 RUN rustup override set nightly
 COPY . .
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim
 LABEL org.opencontainers.image.authors "yinheli"
 LABEL org.opencontainers.image.source https://github.com/yinheli/kungfu
 RUN apt-get update && \
