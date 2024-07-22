@@ -4,7 +4,7 @@ use clap::Parser;
 #[command(author, version, about)]
 pub struct Cli {
     /// Config file
-    #[arg(short, long, value_hint=clap::ValueHint::FilePath, default_value = "config/config.yml")]
+    #[arg(short, long, value_hint=clap::ValueHint::FilePath, default_value = "config/config.yaml")]
     pub config: String,
 
     /// Test config

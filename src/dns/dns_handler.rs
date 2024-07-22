@@ -1,17 +1,19 @@
+use hickory_server::{
+    authority::{
+        AuthLookup, AuthorityObject, LookupError, LookupObject, LookupOptions, LookupRecords,
+    },
+    proto::{
+        op::ResponseCode,
+        rr::{rdata::PTR, LowerName, RData, RecordSet, RecordType},
+    },
+    resolver::Name,
+    server::RequestInfo,
+};
 use log::{debug, error};
 use prometheus::{register_int_counter, IntCounter};
 use rayon::prelude::*;
 use std::{net::IpAddr, str::FromStr, sync::Arc, time::Duration};
 use tokio::time::timeout;
-use hickory_server::{
-    authority::{AuthLookup, AuthorityObject, LookupError, LookupObject, LookupOptions, LookupRecords},
-    proto::{
-        op::ResponseCode,
-        rr::{rdata::{PTR}, LowerName, RData, RecordSet, RecordType},
-    },
-    resolver::Name,
-    server::RequestInfo,
-};
 
 use crate::config::{setting::RuleType, Addr, ArcSetting};
 
@@ -51,7 +53,13 @@ impl DnsHandler {
 
         if query.query_type() == RecordType::PTR {
             let domain = domain.replace(".in-addr.arpa", "");
-            let ip = domain.split('.').collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(".");
+            let ip = domain
+                .split('.')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join(".");
             if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
                 if let Some(v) = self.setting.dns_table.find_by_ip(&addr) {
                     let mut records = RecordSet::with_ttl(query.name().into(), RecordType::PTR, 10);

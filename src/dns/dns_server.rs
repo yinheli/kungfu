@@ -1,10 +1,4 @@
 use anyhow::Error;
-use std::net::ToSocketAddrs;
-use std::{sync::Arc, time::Duration};
-use tokio::{
-    net::{TcpListener, UdpSocket},
-    time,
-};
 use hickory_server::proto::rr::LowerName;
 use hickory_server::{
     authority::{
@@ -19,6 +13,12 @@ use hickory_server::{
     server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo},
     store::forwarder::{ForwardAuthority, ForwardConfig},
     ServerFuture,
+};
+use std::net::ToSocketAddrs;
+use std::{sync::Arc, time::Duration};
+use tokio::{
+    net::{TcpListener, UdpSocket},
+    time,
 };
 
 use super::dns_handler::DnsHandler;

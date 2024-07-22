@@ -5,6 +5,7 @@ use anyhow::{bail, Error};
 use ipnet::IpNet;
 use log::{debug, error, info};
 use notify::RecursiveMode;
+use notify_debouncer_mini::Debouncer;
 use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -18,21 +19,11 @@ use std::{
 pub type ArcSetting = Arc<Setting>;
 
 // holder notify watchers
-static WATCHERS: Mutex<Vec<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>> =
-    Mutex::new(vec![]);
+static WATCHERS: Mutex<Vec<Debouncer<notify::RecommendedWatcher>>> = Mutex::new(vec![]);
 
 pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
-    let file = &cli.config;
-    let path = PathBuf::from(file);
-
-    if !path.exists() {
-        bail!("file not found {}", file);
-    }
-
-    let mut setting: Setting =
-        serde_yaml::from_str(fs::read_to_string(path.clone()).unwrap().as_str())?;
-
-    debug!("load config file: {:?}", path.as_path());
+    let path = config_path(&cli.config);
+    let mut setting = load_settings(&path)?;
 
     // load config.d
     let mut config_dir = PathBuf::from(path.parent().unwrap());
@@ -55,6 +46,32 @@ pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
     if !cli.test && !cli.disable_watch {
         watch(setting.clone(), config_dir);
     }
+
+    Ok(setting)
+}
+
+fn config_path(file: &str) -> PathBuf {
+    let mut path = PathBuf::from(file);
+    if !path.exists() {
+        info!("file not found, will try check for alternative extension");
+        if let Some(ext) = path.extension() {
+            match ext.to_str().unwrap() {
+                "yaml" => {
+                    path.set_extension("yml");
+                }
+                "yml" => {
+                    path.set_extension("yaml");
+                }
+                _ => {}
+            }
+        }
+    }
+    path
+}
+
+fn load_settings(path: &PathBuf) -> Result<Setting, Error> {
+    let setting: Setting =
+        serde_yaml::from_str(fs::read_to_string(path).unwrap().as_str())?;
 
     Ok(setting)
 }
@@ -197,13 +214,22 @@ mod test {
 
     #[tokio::test]
     async fn config_load() {
-        let config = load(&Cli {
-            config: "config/config.yml".to_string(),
-            test: false,
-            disable_watch: false,
-            verbose: true,
-        })
-        .unwrap();
+        let do_load = |file: &str| {
+            load(&Cli {
+                config: file.to_string(),
+                test: false,
+                disable_watch: false,
+                verbose: true,
+            })
+            .unwrap()
+        };
+
+        let config = do_load("config/config.yaml");
+        let config2 = do_load("config/config.yml");
+
+        assert_eq!(config.bind, config2.bind);
+        assert_eq!(config.dns_port, config2.dns_port);
+        assert_eq!(config.network, config2.network);
 
         assert_eq!(config.bind, "0.0.0.0".to_string());
         assert_eq!(config.dns_port, 53);

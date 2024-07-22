@@ -1,8 +1,3 @@
-use ipnet::IpNet;
-use moka::sync::Cache;
-use std::{
-    fmt::{Display, Formatter}, net::{IpAddr, Ipv4Addr}, str::FromStr, sync::Mutex, time::Duration
-};
 use hickory_server::{
     authority::LookupObject,
     proto::rr::{
@@ -10,6 +5,15 @@ use hickory_server::{
         RData, Record,
     },
     resolver::Name,
+};
+use ipnet::IpNet;
+use moka::sync::Cache;
+use std::{
+    fmt::{Display, Formatter},
+    net::{IpAddr, Ipv4Addr},
+    str::FromStr,
+    sync::Mutex,
+    time::Duration,
 };
 
 #[derive(Debug)]
@@ -196,7 +200,6 @@ impl Display for Addr {
             self.domain, self.ip, self.target, self.remark
         )
     }
-
 }
 
 #[cfg(test)]
