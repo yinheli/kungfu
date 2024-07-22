@@ -57,11 +57,11 @@ jobs:
           #   name: kungfu-mipsel-unknown-linux-musl.tar.gz
 
           - target: x86_64-apple-darwin
-            os: macOS-11
+            os: macos-latest
             name: kungfu-x86_64-apple-darwin.tar.gz
 
           - target: aarch64-apple-darwin
-            os: macOS-11
+            os: macos-latest
             name: kungfu-aarch64-apple-darwin.tar.gz
 
           # not supported yet
