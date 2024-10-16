@@ -1,9 +1,12 @@
 use ipnet::IpNet;
+use maxminddb::geoip2;
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::{net::IpAddr, str::FromStr, sync::RwLock};
 
 use super::{dns_table::DnsTable, hosts::Hosts};
+
+pub const GEOIP_COUNTRY_MMDB: &str = "geoip-country.mmdb";
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -120,6 +123,23 @@ impl Rule {
     pub fn match_cidr(&self, ip: &IpAddr) -> Option<String> {
         let cidr = self.cidrs.par_iter().find_any(|&v| v.contains(ip));
         cidr.map(|cidr| cidr.to_string())
+    }
+
+    pub fn match_geoip(&self, geoip: &IpAddr) -> Option<String> {
+        lazy_static! {
+            static ref READER: maxminddb::Reader<Vec<u8>> = {
+                let current_dir = std::env::current_dir().unwrap();
+                let geoip_path = current_dir.join(GEOIP_COUNTRY_MMDB);
+                maxminddb::Reader::open_readfile(geoip_path).unwrap()
+            };
+        }
+        let r: geoip2::Country = READER.lookup(*geoip).unwrap();
+        let code = r.country
+            .and_then(|c| c.iso_code)
+            .unwrap_or("__unknown__");
+
+        let values = self.values.par_iter().find_any(|&v| v.eq_ignore_ascii_case(code));
+        values.cloned()
     }
 }
 

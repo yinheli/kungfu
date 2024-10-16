@@ -37,6 +37,8 @@ moka = { version = "0.12", features = ["sync"] }
 glob = "0.3"
 rayon = "1"
 tun = { version = "0.6", features = ["async"] }
+maxminddb = { version = "0" }
+reqwest = {version = "0", features = ["blocking"]}
 futures = "0.3"
 bytes = "1"
 pnet = "0.35"

@@ -213,16 +213,6 @@ impl DnsHandler {
         domain: &str,
         records: &dyn LookupObject,
     ) -> Option<Addr> {
-        let rules = self.setting.rules.read().unwrap();
-        let rules = rules
-            .iter()
-            .filter(|&v| v.rule_type == RuleType::DnsCidr)
-            .collect::<Vec<_>>();
-
-        if rules.is_empty() {
-            return None;
-        }
-
         let records = records
             .iter()
             .filter(|v| v.data().is_some() && v.data().unwrap().as_a().is_some())
@@ -244,16 +234,36 @@ impl DnsHandler {
 
         let ips = ips.iter().flatten().collect::<Vec<_>>();
 
+        if ips.is_empty() {
+            return None;
+        }
+
+        let rules = self.setting.rules.read().unwrap();
+        let rules = rules
+            .iter()
+            .filter(|&v| v.rule_type == RuleType::DnsCidr || v.rule_type == RuleType::DnsGeoIp)
+            .collect::<Vec<_>>();
+
+        if rules.is_empty() {
+            return None;
+        }
+
         ips.par_iter().find_map_any(|&v| {
             rules.par_iter().find_map_any(|&r| {
                 r.target.as_ref()?;
-                if let Some(m) = r.match_cidr(v) {
-                    let target = r.target.as_ref().unwrap();
-                    let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, target);
-                    let addr = self.setting.dns_table.apply(domain, target, &remark);
 
-                    return Some(addr);
+                let matched = match r.rule_type {
+                    RuleType::DnsCidr => r.match_cidr(v),
+                    RuleType::DnsGeoIp => r.match_geoip(v),
+                    _ => None,
+                };
+
+                if matched.is_some() {
+                    let target = r.target.as_ref().unwrap();
+                    let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, matched.unwrap(), target);
+                    return Some(self.setting.dns_table.apply(domain, target, &remark));
                 }
+
                 None
             })
         })

@@ -36,9 +36,8 @@
     - 220.181.38.148/32
 
 # upstream IP GEO
-# base https://dev.maxmind.com/geoip/geoip2/geolite2
 # https://github.com/P3TERX/GeoLite.mmdb
-# TODO support
+# https://github.com/Loyalsoldier/geoip
 - type: dnsGeoIp
   target: hk
   values:

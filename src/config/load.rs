@@ -1,5 +1,5 @@
 use super::hosts::Hosts;
-use super::setting::{Rule, Setting};
+use super::setting::{self, Rule, RuleType, Setting};
 use crate::{cli::Cli, config::DnsTable};
 use anyhow::{bail, Error};
 use ipnet::IpNet;
@@ -39,6 +39,20 @@ pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
 
     // dns table
     setting.dns_table = DnsTable::new(&setting.network);
+
+    // check if rules has geoip rules
+    if setting.rules.read().unwrap().iter().any(|v| v.rule_type == RuleType::DnsGeoIp) {
+        let geoip_path = PathBuf::from(setting::GEOIP_COUNTRY_MMDB);
+        if !geoip_path.exists() {
+            // download geoip
+            let url = "https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/Country.mmdb";
+            info!("downloading geoip database from: {}, save to: {}", url, setting::GEOIP_COUNTRY_MMDB);
+            let response = reqwest::blocking::get(url)?;
+            let data = response.bytes()?;
+            fs::write(&geoip_path, data)?;
+            info!("geoip database downloaded and saved to: {:?}", geoip_path);
+        }
+    }
 
     let setting = Arc::new(setting);
 
