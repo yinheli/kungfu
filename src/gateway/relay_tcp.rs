@@ -53,7 +53,6 @@ impl Relay {
                     let target = find_target(setting.clone(), session);
 
                     if target.is_none() {
-                        warn!("target not found, {:?}", session);
                         return;
                     }
 
