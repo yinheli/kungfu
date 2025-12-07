@@ -1,6 +1,7 @@
+use bimap::BiMap;
 use std::{
     net::{self, Ipv4Addr},
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
@@ -8,13 +9,12 @@ use moka::sync::Cache;
 
 pub struct Nat {
     nat_type: Type,
-    addr_map: Cache<u32, Arc<Session>>,
-    port_map: Cache<u16, Arc<Session>>,
+    cache: Cache<u32, Arc<Session>>,
+    mapping: Arc<RwLock<BiMap<u32, u16>>>,
 }
 
 pub enum Type {
     Tcp,
-    // todo
     #[allow(dead_code)]
     Udp,
 }
@@ -30,18 +30,15 @@ pub struct Session {
 
 impl Nat {
     pub fn new(nat_type: Type) -> Self {
-        let cache_size = 5000;
         let ttl = Duration::from_secs(60 * 10);
+
+        let mapping = Arc::new(RwLock::new(BiMap::new()));
+        let cache = Self::new_cache(ttl, mapping.clone());
+
         Self {
             nat_type,
-            addr_map: Cache::builder()
-                .max_capacity(cache_size)
-                .time_to_live(ttl)
-                .build(),
-            port_map: Cache::builder()
-                .max_capacity(cache_size)
-                .time_to_live(ttl)
-                .build(),
+            cache,
+            mapping,
         }
     }
 
@@ -53,11 +50,25 @@ impl Nat {
         dst_port: u16,
     ) -> Session {
         let addr_key = u32::from_be_bytes(src_addr.octets()) + src_port as u32;
-        if let Some(session) = self.addr_map.get(&addr_key) {
+
+        if let Some(session) = self.cache.get(&addr_key) {
             return *session;
         }
 
-        let nat_port = self.get_available_port();
+        let nat_port = {
+            let mapping = self.mapping.read().unwrap();
+            if let Some(&port) = mapping.get_by_left(&addr_key) {
+                return Session {
+                    src_addr,
+                    dst_addr,
+                    src_port,
+                    dst_port,
+                    nat_port: port,
+                };
+            }
+
+            self.get_available_port()
+        };
 
         let session = Arc::new(Session {
             src_addr,
@@ -67,21 +78,58 @@ impl Nat {
             nat_port,
         });
 
-        self.put(addr_key, session.clone());
+        self.cache.insert(addr_key, session.clone());
+
+        let mut mapping = self.mapping.write().unwrap();
+        mapping.insert(addr_key, nat_port);
 
         *session
     }
 
     pub fn find(&self, nat_port: u16) -> Option<Session> {
-        if let Some(v) = self.port_map.get(&nat_port) {
-            return Some(*v);
+        if let Some(addr_key) = self.get_addr_key_by_port_fast(&nat_port)
+            && let Some(session) = self.cache.get(&addr_key)
+        {
+            return Some(*session);
         }
+
         None
     }
 
-    fn put(&self, addr_key: u32, session: Arc<Session>) {
-        self.addr_map.insert(addr_key, session.clone());
-        self.port_map.insert(session.nat_port, session.clone());
+    #[allow(dead_code)]
+    pub fn clear(&self) {
+        self.cache.invalidate_all();
+
+        let mut mapping = self.mapping.write().unwrap();
+        mapping.clear();
+    }
+
+    #[allow(dead_code)]
+    pub fn stats(&self) -> (usize, usize) {
+        let mapping = self.mapping.read().unwrap();
+        (mapping.len(), self.cache.entry_count() as usize)
+    }
+
+    fn new_cache(ttl: Duration, mapping: Arc<RwLock<BiMap<u32, u16>>>) -> Cache<u32, Arc<Session>> {
+        let mapping_clone = mapping.clone();
+
+        let eviction_listener = move |addr_key: Arc<u32>, _session: Arc<Session>, _cause| {
+            let mut mapping_guard = mapping_clone.write().unwrap();
+            if let Some((_removed_addr_key, _removed_nat_port)) =
+                mapping_guard.remove_by_left(&*addr_key)
+            {}
+        };
+
+        Cache::builder()
+            .max_capacity(5000)
+            .time_to_live(ttl)
+            .eviction_listener(eviction_listener)
+            .build()
+    }
+
+    fn get_addr_key_by_port_fast(&self, nat_port: &u16) -> Option<u32> {
+        let mapping = self.mapping.read().unwrap();
+        mapping.get_by_right(nat_port).copied()
     }
 
     fn get_available_port(&self) -> u16 {

@@ -1,3 +1,4 @@
+use bimap::BiMap;
 use hickory_server::{
     authority::LookupObject,
     proto::rr::{
@@ -12,14 +13,14 @@ use std::{
     fmt::{Display, Formatter},
     net::{IpAddr, Ipv4Addr},
     str::FromStr,
-    sync::Mutex,
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
 #[derive(Debug)]
 pub struct DnsTable {
-    domain: Cache<String, Option<Addr>>,
-    addr: Cache<IpAddr, Addr>,
+    cache: Cache<String, Arc<Addr>>,
+    mapping: Arc<RwLock<BiMap<String, IpAddr>>>,
     network: IpNet,
     gateway: IpAddr,
     pool_size: usize,
@@ -40,10 +41,10 @@ const DNS_CACHE_SIZE: u64 = 2000;
 
 impl Default for DnsTable {
     fn default() -> Self {
-        let (domain, addr) = DnsTable::new_cache();
+        let cache = DnsTable::new_cache(Arc::new(RwLock::new(BiMap::new())));
         Self {
-            domain,
-            addr,
+            cache,
+            mapping: Arc::new(RwLock::new(BiMap::new())),
             network: Default::default(),
             gateway: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             pool_size: Default::default(),
@@ -59,11 +60,12 @@ impl DnsTable {
         let hosts = network.hosts();
         let pool_size = hosts.count();
 
-        let (domain, addr) = DnsTable::new_cache();
+        let mapping = Arc::new(RwLock::new(BiMap::new()));
+        let cache = DnsTable::new_cache(mapping.clone());
 
         Self {
-            domain,
-            addr,
+            cache,
+            mapping,
             network,
             gateway: network.addr(),
             pool_size,
@@ -71,46 +73,59 @@ impl DnsTable {
         }
     }
 
-    /// apply domain addr
     pub fn apply(&self, domain: &str, target: &str, remark: &str) -> Addr {
         let ip = self.allocate_addr();
-        let addr = Addr::new(domain, Some(ip), target, remark);
+        let addr = Arc::new(Addr::new(domain, Some(ip), target, remark));
 
-        self.domain.insert(domain.to_string(), Some(addr.clone()));
-        self.addr.insert(ip, addr.clone());
+        self.cache.insert(domain.to_string(), addr.clone());
 
-        addr
+        let mut mapping = self.mapping.write().unwrap();
+        mapping.insert(domain.to_string(), ip);
+
+        (*addr).clone()
     }
 
-    /// find addr by ip
     pub fn find_by_ip(&self, ip: &IpAddr) -> Option<Addr> {
-        let r = self.addr.get(ip);
-        if let Some(addr) = &r {
-            self.domain.get(&addr.domain);
+        if let Some(domain) = self.get_domain_by_ip_fast(ip)
+            && let Some(addr) = self.cache.get(&domain)
+        {
+            return Some((*addr).clone());
         }
-        r
+
+        None
     }
 
     pub fn find_by_domain(&self, domain: &str) -> Option<Option<Addr>> {
-        let r = self.domain.get(domain);
-
-        // also touch addr reference via ip if exists, to keep addr cache alive
-        if let Some(Some(Addr { ip: Some(ip), .. })) = r {
-            self.addr.get(&ip);
+        if let Some(addr) = self.cache.get(domain) {
+            return Some(Some((*addr).clone()));
         }
 
-        r
+        let mapping = self.mapping.read().unwrap();
+        if mapping.contains_left(domain) {
+            Some(None)
+        } else {
+            None
+        }
     }
 
     pub fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Addr {
-        let addr = Addr::new(domain, ip, "", remark);
-        self.domain.insert(domain.to_string(), Some(addr.clone()));
-        addr
+        let addr = Arc::new(Addr::new(domain, ip, "", remark));
+
+        self.cache.insert(domain.to_string(), addr.clone());
+
+        if let Some(ip_addr) = ip {
+            let mut mapping = self.mapping.write().unwrap();
+            mapping.insert(domain.to_string(), ip_addr);
+        }
+
+        (*addr).clone()
     }
 
     pub fn clear(&self) {
-        self.domain.invalidate_all();
-        self.addr.invalidate_all();
+        self.cache.invalidate_all();
+
+        let mut mapping = self.mapping.write().unwrap();
+        mapping.clear();
     }
 
     fn allocate_addr(&self) -> IpAddr {
@@ -129,18 +144,25 @@ impl DnsTable {
         addr
     }
 
-    fn new_cache() -> (Cache<String, Option<Addr>>, Cache<IpAddr, Addr>) {
+    fn new_cache(mapping: Arc<RwLock<BiMap<String, IpAddr>>>) -> Cache<String, Arc<Addr>> {
         let idle = Duration::from_secs(60 * 10);
-        (
-            Cache::builder()
-                .max_capacity(DNS_CACHE_SIZE)
-                .time_to_idle(idle)
-                .build(),
-            Cache::builder()
-                .max_capacity(DNS_CACHE_SIZE)
-                .time_to_idle(idle)
-                .build(),
-        )
+        let mapping_clone = mapping.clone();
+
+        let eviction_listener = move |domain: Arc<String>, _addr: Arc<Addr>, _cause| {
+            let mut mapping_guard = mapping_clone.write().unwrap();
+            if let Some((_removed_domain, _removed_ip)) = mapping_guard.remove_by_left(&*domain) {}
+        };
+
+        Cache::builder()
+            .max_capacity(DNS_CACHE_SIZE)
+            .time_to_idle(idle)
+            .eviction_listener(eviction_listener)
+            .build()
+    }
+
+    fn get_domain_by_ip_fast(&self, ip: &IpAddr) -> Option<String> {
+        let mapping = self.mapping.read().unwrap();
+        mapping.get_by_right(ip).cloned()
     }
 }
 
