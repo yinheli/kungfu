@@ -3,13 +3,13 @@ use std::{net::IpAddr, sync::Arc, time::Duration};
 use log::warn;
 
 use moka::sync::Cache;
-use prometheus::{register_int_counter_vec, IntCounterVec};
+use prometheus::{IntCounterVec, register_int_counter_vec};
 use rand::prelude::IndexedRandom;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{io::copy_bidirectional, net::TcpListener};
 
 use crate::{
-    config::{setting::RuleType, ArcSetting},
+    config::{ArcSetting, setting::RuleType},
     gateway::proxy::open_proxy,
 };
 
@@ -83,54 +83,54 @@ impl Relay {
 
                             let result = copy_bidirectional(&mut stream, &mut outbound).await;
 
-                            if let Ok((up, down)) = result {
-                                if setting.metrics.is_some() {
-                                    lazy_static! {
-                                        static ref RELAY_COUNT: IntCounterVec =
-                                            register_int_counter_vec!(
-                                                "relay_total",
-                                                "Number of bytes relay by proxy",
-                                                &["action", "proxy"]
-                                            )
-                                            .unwrap();
-                                        static ref RELAY_HOST_COUNT: IntCounterVec =
-                                            register_int_counter_vec!(
+                            if let Ok((up, down)) = result
+                                && setting.metrics.is_some()
+                            {
+                                lazy_static! {
+                                    static ref RELAY_COUNT: IntCounterVec =
+                                        register_int_counter_vec!(
+                                            "relay_total",
+                                            "Number of bytes relay by proxy",
+                                            &["action", "proxy"]
+                                        )
+                                        .unwrap();
+                                    static ref RELAY_HOST_COUNT: IntCounterVec =
+                                        register_int_counter_vec!(
                                             "relay_host_total",
                                             "Number of bytes relay by domain (latest 100 domains)",
                                             &["action", "domain"]
                                         )
-                                            .unwrap();
-                                        static ref RELAY_COUNT_CACHE: Cache<String, u8> =
-                                            Cache::builder()
-                                                .max_capacity(100)
-                                                .time_to_live(Duration::from_secs(60))
-                                                .eviction_listener(|k: Arc<String>, _, c| {
-                                                    if c.was_evicted() {
-                                                        let _ = RELAY_HOST_COUNT
-                                                            .remove_label_values(&["upload", &k]);
-                                                        let _ = RELAY_HOST_COUNT
-                                                            .remove_label_values(&["download", &k]);
-                                                    }
-                                                })
-                                                .build();
-                                    }
-
-                                    RELAY_COUNT
-                                        .with_label_values(&["upload", &proxy.name])
-                                        .inc_by(up);
-                                    RELAY_COUNT
-                                        .with_label_values(&["download", &proxy.name])
-                                        .inc_by(down);
-
-                                    RELAY_HOST_COUNT
-                                        .with_label_values(&["upload", &target.1])
-                                        .inc_by(up);
-                                    RELAY_HOST_COUNT
-                                        .with_label_values(&["download", &target.1])
-                                        .inc_by(down);
-
-                                    RELAY_COUNT_CACHE.insert(target.1.clone(), 0);
+                                        .unwrap();
+                                    static ref RELAY_COUNT_CACHE: Cache<String, u8> =
+                                        Cache::builder()
+                                            .max_capacity(100)
+                                            .time_to_live(Duration::from_secs(60))
+                                            .eviction_listener(|k: Arc<String>, _, c| {
+                                                if c.was_evicted() {
+                                                    let _ = RELAY_HOST_COUNT
+                                                        .remove_label_values(&["upload", &k]);
+                                                    let _ = RELAY_HOST_COUNT
+                                                        .remove_label_values(&["download", &k]);
+                                                }
+                                            })
+                                            .build();
                                 }
+
+                                RELAY_COUNT
+                                    .with_label_values(&["upload", &proxy.name])
+                                    .inc_by(up);
+                                RELAY_COUNT
+                                    .with_label_values(&["download", &proxy.name])
+                                    .inc_by(down);
+
+                                RELAY_HOST_COUNT
+                                    .with_label_values(&["upload", &target.1])
+                                    .inc_by(up);
+                                RELAY_HOST_COUNT
+                                    .with_label_values(&["download", &target.1])
+                                    .inc_by(down);
+
+                                RELAY_COUNT_CACHE.insert(target.1.clone(), 0);
                             }
                         }
                         Err(e) => {

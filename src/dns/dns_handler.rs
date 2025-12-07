@@ -4,18 +4,18 @@ use hickory_server::{
     },
     proto::{
         op::ResponseCode,
-        rr::{rdata::PTR, LowerName, RData, RecordSet, RecordType},
+        rr::{LowerName, RData, RecordSet, RecordType, rdata::PTR},
     },
     resolver::Name,
     server::RequestInfo,
 };
 use log::{debug, error};
-use prometheus::{register_int_counter, IntCounter};
+use prometheus::{IntCounter, register_int_counter};
 use rayon::prelude::*;
 use std::{net::IpAddr, str::FromStr, sync::Arc, time::Duration};
 use tokio::time::timeout;
 
-use crate::config::{setting::RuleType, Addr, ArcSetting};
+use crate::config::{Addr, ArcSetting, setting::RuleType};
 
 pub(crate) struct DnsHandler {
     upstream: Box<dyn AuthorityObject>,
@@ -60,15 +60,15 @@ impl DnsHandler {
                 .rev()
                 .collect::<Vec<_>>()
                 .join(".");
-            if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
-                if let Some(v) = self.setting.dns_table.find_by_ip(&addr) {
-                    let mut records = RecordSet::with_ttl(query.name().into(), RecordType::PTR, 10);
-                    let ptr = format!("{}.{}", domain, v.domain);
-                    records.add_rdata(RData::PTR(PTR(Name::from_str(&ptr).unwrap())));
-                    let answers = LookupRecords::new(Default::default(), Arc::new(records));
-                    let result = AuthLookup::answers(answers, None);
-                    return Ok(Box::new(result));
-                }
+            if let Ok(addr) = ip.parse::<std::net::IpAddr>()
+                && let Some(v) = self.setting.dns_table.find_by_ip(&addr)
+            {
+                let mut records = RecordSet::with_ttl(query.name().into(), RecordType::PTR, 10);
+                let ptr = format!("{}.{}", domain, v.domain);
+                records.add_rdata(RData::PTR(PTR(Name::from_str(&ptr).unwrap())));
+                let answers = LookupRecords::new(Default::default(), Arc::new(records));
+                let result = AuthLookup::answers(answers, None);
+                return Ok(Box::new(result));
             }
         }
 
@@ -150,14 +150,14 @@ impl DnsHandler {
         match r {
             Ok(v) => {
                 for v in v.iter() {
-                    if let Some(v) = v.data() {
-                        if let Some(v) = v.as_a() {
-                            return Some(self.setting.dns_table.allocate(
-                                domain,
-                                Some(IpAddr::V4(**v)),
-                                "host",
-                            ));
-                        }
+                    if let Some(v) = v.data()
+                        && let Some(v) = v.as_a()
+                    {
+                        return Some(self.setting.dns_table.allocate(
+                            domain,
+                            Some(IpAddr::V4(**v)),
+                            "host",
+                        ));
                     }
                 }
                 None

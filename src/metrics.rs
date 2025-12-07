@@ -2,7 +2,7 @@ use std::{net::SocketAddr, str::FromStr};
 
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::{server::conn::http1, service::service_fn, Request, Response, StatusCode};
+use hyper::{Request, Response, StatusCode, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use log::{info, warn};
 use prometheus::{Encoder, TextEncoder};

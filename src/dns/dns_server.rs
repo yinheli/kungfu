@@ -1,18 +1,18 @@
 use anyhow::Error;
 use hickory_server::proto::rr::LowerName;
 use hickory_server::{
+    ServerFuture,
     authority::{
         AuthorityObject, Catalog, LookupError, LookupObject, LookupOptions, MessageRequest,
         UpdateResult, ZoneType,
     },
     proto::{op::ResponseCode, rr::RecordType},
     resolver::{
-        config::{NameServerConfigGroup, ResolverOpts},
         Name,
+        config::{NameServerConfigGroup, ResolverOpts},
     },
     server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo},
     store::forwarder::{ForwardAuthority, ForwardConfig},
-    ServerFuture,
 };
 use std::net::ToSocketAddrs;
 use std::{sync::Arc, time::Duration};

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use fast_socks5::client::{Config, Socks5Stream};
 use tokio::net::TcpStream;
 use url::Url;

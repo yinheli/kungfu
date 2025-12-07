@@ -1,8 +1,8 @@
 use hickory_server::{
     authority::LookupObject,
     proto::rr::{
-        rdata::{A, AAAA, TXT},
         RData, Record,
+        rdata::{A, AAAA, TXT},
     },
     resolver::Name,
 };

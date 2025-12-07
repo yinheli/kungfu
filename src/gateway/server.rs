@@ -1,16 +1,16 @@
-use crate::config::{setting::RuleType, ArcSetting};
+use crate::config::{ArcSetting, setting::RuleType};
 use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
 use ipnet::IpNet;
 use log::{error, info};
 
 use pnet::packet::{
-    icmp::{self, destination_unreachable::IcmpCodes, IcmpTypes, MutableIcmpPacket},
+    Packet,
+    icmp::{self, IcmpTypes, MutableIcmpPacket, destination_unreachable::IcmpCodes},
     ip::IpNextHeaderProtocols,
     ipv4::{self, MutableIpv4Packet},
     tcp::{self, MutableTcpPacket},
     udp::MutableUdpPacket,
-    Packet,
 };
 use std::{
     net::Ipv4Addr,
@@ -81,13 +81,13 @@ impl Gateway {
                     _ => None,
                 };
 
-                if let Some(data) = data {
-                    if let Err(e) = stream.send(data).await {
-                        error!(
-                            "send reply error: {:?}, src: {}, dst:{}, protocol: {:?}",
-                            e, src, dst, protocol
-                        );
-                    }
+                if let Some(data) = data
+                    && let Err(e) = stream.send(data).await
+                {
+                    error!(
+                        "send reply error: {:?}, src: {}, dst:{}, protocol: {:?}",
+                        e, src, dst, protocol
+                    );
                 }
             }
         }

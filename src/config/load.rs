@@ -1,7 +1,7 @@
 use super::hosts::Hosts;
 use super::setting::{Rule, Setting};
 use crate::{cli::Cli, config::DnsTable};
-use anyhow::{bail, Error};
+use anyhow::{Error, bail};
 use ipnet::IpNet;
 use log::{debug, error, info};
 use notify::RecursiveMode;
@@ -70,8 +70,7 @@ fn config_path(file: &str) -> PathBuf {
 }
 
 fn load_settings(path: &PathBuf) -> Result<Setting, Error> {
-    let setting: Setting =
-        serde_yaml::from_str(fs::read_to_string(path).unwrap().as_str())?;
+    let setting: Setting = serde_yaml::from_str(fs::read_to_string(path).unwrap().as_str())?;
 
     Ok(setting)
 }
