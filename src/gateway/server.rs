@@ -18,7 +18,7 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-use tun::{AsyncDevice, TunPacket};
+use tun::AsyncDevice;
 
 use super::{
     nat::{Nat, Type},
@@ -68,7 +68,7 @@ impl Gateway {
 
         while let Some(packet) = stream.next().await {
             if let Ok(packet) = packet {
-                let mut packet = packet.get_bytes().to_vec();
+                let mut packet = packet;
                 let mut v4 = ipv4::MutableIpv4Packet::new(&mut packet).unwrap();
                 let src = v4.get_source();
                 let dst = v4.get_destination();
@@ -82,7 +82,7 @@ impl Gateway {
                 };
 
                 if let Some(data) = data {
-                    if let Err(e) = stream.send(TunPacket::new(data)).await {
+                    if let Err(e) = stream.send(data).await {
                         error!(
                             "send reply error: {:?}, src: {}, dst:{}, protocol: {:?}",
                             e, src, dst, protocol
@@ -105,7 +105,7 @@ impl Gateway {
 
         #[cfg(target_os = "linux")]
         {
-            config.name("kf0");
+            config.tun_name("kf0");
         }
 
         let dev = match tun::create_as_async(&config) {

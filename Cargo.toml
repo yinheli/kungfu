@@ -1,6 +1,6 @@
 [package]
 name = "kungfu"
-version = "0.1.27"
+version = "0.1.28"
 edition = "2021"
 authors = ["yinheli <me@yinheli.com>"]
 keywords = ["dns", "proxy", "hijacking", "transparent-proxy"]
@@ -24,9 +24,9 @@ num_cpus = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-io-timeout = "1"
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
-notify = "6"
-notify-debouncer-mini = "0.4"
+serde_yaml = "0.9.34"
+notify = "8"
+notify-debouncer-mini = "0.7"
 regex = "1"
 lazy_static = "1"
 chrono = "0.4"
@@ -36,14 +36,14 @@ ipnet = "2"
 moka = { version = "0.12", features = ["sync"] }
 glob = "0.3"
 rayon = "1"
-tun = { version = "0.6", features = ["async"] }
+tun = { version = "0.8", features = ["async"] }
 futures = "0.3"
 bytes = "1"
 pnet = "0.35"
-fast-socks5 = "0.9"
-rand = "0.8"
+fast-socks5 = "0.10"
+rand = "0.9"
 url = "2"
-prometheus = { version = "0.13", features = ["process"] }
+prometheus = { version = "0.14", features = ["process"] }
 hyper = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }

@@ -4,7 +4,7 @@ use log::warn;
 
 use moka::sync::Cache;
 use prometheus::{register_int_counter_vec, IntCounterVec};
-use rand::seq::SliceRandom;
+use rand::prelude::IndexedRandom;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{io::copy_bidirectional, net::TcpListener};
 
@@ -143,11 +143,11 @@ impl Relay {
     }
 }
 
-fn random_proxy(proxy: &Vec<String>) -> String {
+fn random_proxy(proxy: &[String]) -> String {
     if proxy.len() == 1 {
         return proxy[0].clone();
     }
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     proxy.choose(&mut rng).unwrap().clone()
 }
 
