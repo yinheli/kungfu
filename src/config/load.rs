@@ -1,5 +1,7 @@
 use super::hosts::Hosts;
-use super::setting::{Rule, Setting};
+use super::setting::Setting;
+use crate::rule::{RuleConfig, Rules};
+use crate::runtime::{ArcRuntime, RuntimeContext};
 use crate::{cli::Cli, config::DnsTable};
 use anyhow::{Error, bail};
 use ipnet::IpNet;
@@ -9,45 +11,47 @@ use notify_debouncer_mini::Debouncer;
 use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
-use std::{
-    fs,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
-
-pub type ArcSetting = Arc<Setting>;
+use std::{fs, path::PathBuf};
 
 // holder notify watchers
 static WATCHERS: Mutex<Vec<Debouncer<notify::RecommendedWatcher>>> = Mutex::new(vec![]);
 
-pub fn load(cli: &Cli) -> Result<ArcSetting, Error> {
+pub fn load(cli: &Cli) -> Result<ArcRuntime, Error> {
     let path = config_path(&cli.config);
-    let mut setting = load_settings(&path)?;
+    let setting = load_settings(&path)?;
 
     // load config.d
     let mut config_dir = PathBuf::from(path.parent().unwrap());
     config_dir.push("config.d");
-    load_all_rules(&setting, config_dir.clone())?;
+
+    let rule_configs = load_all_rule_configs(config_dir.clone())?;
 
     let mut host_file = config_dir.clone();
     host_file.push("hosts");
-    load_hosts(&setting, host_file)?;
+    let hosts = load_hosts_file(host_file)?;
 
     // test settings
     test_setting(&setting)?;
 
-    // dns table
-    setting.dns_table = DnsTable::new(&setting.network);
+    // build runtime components
+    let rules = Arc::new(Rules::new(rule_configs)?);
+    let dns_table = DnsTable::new(&setting.network);
 
-    let setting = Arc::new(setting);
+    let runtime = Arc::new(RuntimeContext {
+        setting: Arc::new(setting),
+        rules,
+        hosts: RwLock::new(hosts),
+        dns_table,
+    });
 
     // watch rules
     if !cli.test && !cli.disable_watch {
-        watch(setting.clone(), config_dir);
+        watch(runtime.clone(), config_dir);
     }
 
-    Ok(setting)
+    Ok(runtime)
 }
 
 fn config_path(file: &str) -> PathBuf {
@@ -75,8 +79,8 @@ fn load_settings(path: &PathBuf) -> Result<Setting, Error> {
     Ok(setting)
 }
 
-fn load_hosts(setting: &Setting, host_file: PathBuf) -> Result<(), Error> {
-    let hosts = if host_file.is_file() && host_file.exists() {
+fn load_hosts_file(host_file: PathBuf) -> Result<Hosts, Error> {
+    let hosts_content = if host_file.is_file() && host_file.exists() {
         debug!("load host file: {:?}", host_file);
         fs::read_to_string(host_file)?
     } else {
@@ -84,19 +88,15 @@ fn load_hosts(setting: &Setting, host_file: PathBuf) -> Result<(), Error> {
         "".to_string()
     };
 
-    *setting.hosts.write().unwrap() = hosts;
-    *setting.hosts_match.write().unwrap() = Hosts::parse(&setting.hosts.read().unwrap()).unwrap();
-    setting.dns_table.clear();
-
-    Ok(())
+    Hosts::parse(&hosts_content)
 }
 
-fn load_all_rules(setting: &Setting, rules_dir: PathBuf) -> Result<(), Error> {
+fn load_all_rule_configs(rules_dir: PathBuf) -> Result<Vec<RuleConfig>, Error> {
     if !rules_dir.exists() {
-        return Ok(());
+        return Ok(vec![]);
     }
 
-    let mut rules = vec![];
+    let mut configs = vec![];
 
     for item in fs::read_dir(rules_dir).unwrap() {
         if let Ok(ref it) = item {
@@ -109,9 +109,9 @@ fn load_all_rules(setting: &Setting, rules_dir: PathBuf) -> Result<(), Error> {
                 let ext = ext.as_str();
                 match ext {
                     "yaml" | "yml" => {
-                        let rs = load_rule_file(item.unwrap().path())?;
-                        if let Some(mut rs) = rs {
-                            rules.append(&mut rs);
+                        let cs = load_rule_config_file(item.unwrap().path())?;
+                        if let Some(mut cs) = cs {
+                            configs.append(&mut cs);
                         }
                     }
                     _ => {}
@@ -120,41 +120,34 @@ fn load_all_rules(setting: &Setting, rules_dir: PathBuf) -> Result<(), Error> {
         }
     }
 
-    *setting.rules.write().unwrap() = rules;
-    setting.dns_table.clear();
-
-    Ok(())
+    Ok(configs)
 }
 
-fn load_rule_file(rule_file: PathBuf) -> Result<Option<Vec<Rule>>, Error> {
+fn load_rule_config_file(rule_file: PathBuf) -> Result<Option<Vec<RuleConfig>>, Error> {
     debug!("load rule file: {:?}", &rule_file);
-    let rules: Option<Vec<Rule>> =
+    let configs: Option<Vec<RuleConfig>> =
         serde_yaml::from_str(fs::read_to_string(rule_file).unwrap().as_str()).unwrap();
 
-    Ok(rules)
+    Ok(configs)
 }
 
-fn watch(setting: ArcSetting, rules_dir: PathBuf) {
+fn watch(runtime: ArcRuntime, rules_dir: PathBuf) {
     debug!("watch dir: {:?}", &rules_dir);
 
     let dir = rules_dir.clone();
 
     let event_handler = move |event: notify_debouncer_mini::DebounceEventResult| {
-        if let Err(e) = load_all_rules(&setting.clone(), rules_dir.clone()) {
-            error!("load rules error: {:?}", e);
-        }
-
         if let Ok(evs) = event {
             evs.iter().for_each(|v| {
                 if v.path.file_name().eq(&Some(OsStr::new("hosts"))) {
                     info!("reload hosts: {:?}", v.path);
-                    if let Err(e) = load_hosts(&setting.clone(), v.path.clone()) {
+                    if let Err(e) = reload_hosts(&runtime, v.path.clone()) {
                         error!("load hosts error: {:?}", e);
                     }
                 }
             });
 
-            let rules = evs.iter().any(|v| {
+            let has_rule_changes = evs.iter().any(|v| {
                 let ext = v.path.extension();
                 if let Some(v) = ext {
                     return v == "yaml" || v == "yml";
@@ -162,9 +155,9 @@ fn watch(setting: ArcSetting, rules_dir: PathBuf) {
                 false
             });
 
-            if rules {
+            if has_rule_changes {
                 info!("reload rules");
-                if let Err(e) = load_all_rules(&setting.clone(), rules_dir.clone()) {
+                if let Err(e) = reload_rules(&runtime, rules_dir.clone()) {
                     error!("load rules error: {:?}", e);
                 }
             }
@@ -177,6 +170,20 @@ fn watch(setting: ArcSetting, rules_dir: PathBuf) {
     let w = deboncer.watcher();
     w.watch(dir.as_path(), RecursiveMode::NonRecursive).unwrap();
     WATCHERS.lock().unwrap().push(deboncer);
+}
+
+fn reload_hosts(runtime: &RuntimeContext, host_file: PathBuf) -> Result<(), Error> {
+    let hosts = load_hosts_file(host_file)?;
+    *runtime.hosts.write().unwrap() = hosts;
+    runtime.dns_table.clear();
+    Ok(())
+}
+
+fn reload_rules(runtime: &RuntimeContext, rules_dir: PathBuf) -> Result<(), Error> {
+    let configs = load_all_rule_configs(rules_dir)?;
+    runtime.rules.reload(configs)?;
+    runtime.dns_table.clear();
+    Ok(())
 }
 
 fn test_setting(setting: &Setting) -> Result<(), Error> {
@@ -223,15 +230,15 @@ mod test {
             .unwrap()
         };
 
-        let config = do_load("config/config.yaml");
-        let config2 = do_load("config/config.yml");
+        let runtime = do_load("config/config.yaml");
+        let runtime2 = do_load("config/config.yml");
 
-        assert_eq!(config.bind, config2.bind);
-        assert_eq!(config.dns_port, config2.dns_port);
-        assert_eq!(config.network, config2.network);
+        assert_eq!(runtime.setting.bind, runtime2.setting.bind);
+        assert_eq!(runtime.setting.dns_port, runtime2.setting.dns_port);
+        assert_eq!(runtime.setting.network, runtime2.setting.network);
 
-        assert_eq!(config.bind, "0.0.0.0".to_string());
-        assert_eq!(config.dns_port, 53);
-        assert_eq!(config.network, "10.89.0.1/16".to_string());
+        assert_eq!(runtime.setting.bind, "0.0.0.0".to_string());
+        assert_eq!(runtime.setting.dns_port, 53);
+        assert_eq!(runtime.setting.network, "10.89.0.1/16".to_string());
     }
 }

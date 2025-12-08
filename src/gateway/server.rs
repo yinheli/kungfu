@@ -1,4 +1,4 @@
-use crate::config::{ArcSetting, setting::RuleType};
+use crate::runtime::ArcRuntime;
 use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
 use ipnet::IpNet;
@@ -25,13 +25,13 @@ use super::{
     relay_tcp,
 };
 
-pub async fn serve(setting: ArcSetting) {
+pub async fn serve(runtime: ArcRuntime) {
     let tcp_nat = Arc::new(Nat::new(Type::Tcp));
-    Gateway::new(setting, tcp_nat).serve().await;
+    Gateway::new(runtime, tcp_nat).serve().await;
 }
 
 struct Gateway {
-    setting: ArcSetting,
+    runtime: ArcRuntime,
     gateway: Ipv4Addr,
     network: IpNet,
     tcp_nat: Arc<Nat>,
@@ -39,8 +39,8 @@ struct Gateway {
 }
 
 impl Gateway {
-    fn new(setting: ArcSetting, tcp_nat: Arc<Nat>) -> Self {
-        let network = IpNet::from_str(&setting.network).unwrap();
+    fn new(runtime: ArcRuntime, tcp_nat: Arc<Nat>) -> Self {
+        let network = IpNet::from_str(&runtime.setting.network).unwrap();
         let gateway = match network {
             IpNet::V4(v) => v.addr(),
             IpNet::V6(_) => panic!("not supported yet"),
@@ -53,7 +53,7 @@ impl Gateway {
             .port();
 
         Self {
-            setting,
+            runtime,
             gateway,
             network,
             tcp_nat,
@@ -155,14 +155,7 @@ impl Gateway {
                 .output();
         }
 
-        let routes = {
-            let rules = self.setting.rules.read().unwrap();
-            rules
-                .iter()
-                .filter(|&v| v.rule_type == RuleType::Route)
-                .flat_map(|v| v.values.clone())
-                .collect::<Vec<_>>()
-        };
+        let routes = self.runtime.rules.get_route_rules();
 
         for r in routes {
             #[cfg(target_os = "linux")]
@@ -188,7 +181,7 @@ impl Gateway {
 
     async fn setup_tcp_relay(&self) {
         let addr = format!("{}:{}", self.network.addr(), self.relay_port);
-        let relay = relay_tcp::Relay::new(self.setting.clone(), addr, self.tcp_nat.clone());
+        let relay = relay_tcp::Relay::new(self.runtime.clone(), addr, self.tcp_nat.clone());
         relay.serve().await
     }
 

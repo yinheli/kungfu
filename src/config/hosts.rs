@@ -14,25 +14,27 @@ impl Hosts {
             }
 
             if let Some(v) = line.find('#') {
-                line = &line[..v];
+                line = line[..v].trim_end();
             }
 
-            // tab to space
-            let line = line.replace('\t', " ");
+            let mut parts = line.split_whitespace();
 
-            let item = line.splitn(2, ' ').map(|v| v.trim()).collect::<Vec<_>>();
-            if item.len() != 2 {
-                continue;
-            }
+            let target = match parts.next() {
+                Some(t) => t,
+                None => continue,
+            };
 
-            let target = item[0].to_string();
             let mut patterns = vec![];
-            for x in item[1].split(' ') {
-                let pattern = glob::Pattern::new(x.trim())?;
+            for domain in parts {
+                let pattern = glob::Pattern::new(domain)?;
                 patterns.push(pattern);
             }
 
-            items.push((target, patterns));
+            if patterns.is_empty() {
+                continue;
+            }
+
+            items.push((target.to_string(), patterns));
         }
         Ok(Self(items))
     }

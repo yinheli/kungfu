@@ -11,7 +11,7 @@ use ipnet::IpNet;
 use moka::sync::Cache;
 use std::{
     fmt::{Display, Formatter},
-    net::{IpAddr, Ipv4Addr},
+    net::IpAddr,
     str::FromStr,
     sync::{Arc, Mutex, RwLock},
     time::Duration,
@@ -41,15 +41,7 @@ const DNS_CACHE_SIZE: u64 = 2000;
 
 impl Default for DnsTable {
     fn default() -> Self {
-        let cache = DnsTable::new_cache(Arc::new(RwLock::new(BiMap::new())));
-        Self {
-            cache,
-            mapping: Arc::new(RwLock::new(BiMap::new())),
-            network: Default::default(),
-            gateway: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            pool_size: Default::default(),
-            offset: Default::default(),
-        }
+        Self::new("10.89.0.1/16")
     }
 }
 
@@ -60,7 +52,7 @@ impl DnsTable {
         let hosts = network.hosts();
         let pool_size = hosts.count();
 
-        let mapping = Arc::new(RwLock::new(BiMap::new()));
+        let mapping: Arc<RwLock<BiMap<String, IpAddr>>> = Default::default();
         let cache = DnsTable::new_cache(mapping.clone());
 
         Self {
@@ -129,19 +121,32 @@ impl DnsTable {
     }
 
     fn allocate_addr(&self) -> IpAddr {
-        let hosts = self.network.hosts();
         let mut offset = self.offset.lock().unwrap();
-        let mut addr;
         loop {
             let n = *offset % self.pool_size;
-            addr = hosts.clone().nth(n).unwrap();
             *offset += 1;
-            if addr.eq(&self.gateway) {
-                continue;
+
+            let addr = self.nth_host_ip(n);
+
+            if addr != self.gateway {
+                return addr;
             }
-            break;
         }
-        addr
+    }
+
+    fn nth_host_ip(&self, n: usize) -> IpAddr {
+        match self.network.network() {
+            IpAddr::V4(network_addr) => {
+                let base = u32::from(network_addr);
+                let target = base + 1 + n as u32;
+                IpAddr::V4(target.into())
+            }
+            IpAddr::V6(network_addr) => {
+                let base = u128::from(network_addr);
+                let target = base + 1 + n as u128;
+                IpAddr::V6(target.into())
+            }
+        }
     }
 
     fn new_cache(mapping: Arc<RwLock<BiMap<String, IpAddr>>>) -> Cache<String, Arc<Addr>> {
@@ -229,13 +234,13 @@ mod tests {
     extern crate test;
     use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::Ipv4Addr;
     use std::str::FromStr;
     use test::Bencher;
 
     use ipnet::IpNet;
 
-    use super::DnsTable;
+    use super::*;
 
     #[test]
     fn it_works() {
@@ -314,5 +319,61 @@ mod tests {
                 table.find_by_domain(&format!("{i}.example.com"));
             })
         });
+    }
+
+    #[test]
+    fn test_cache_mapping_sync_on_eviction() {
+        let table = DnsTable::new("10.89.0.1/24");
+
+        let domains = ["test1.com", "test2.com", "test3.com"];
+        let mut ips = vec![];
+
+        for domain in &domains {
+            let addr = table.apply(domain, "proxy", "test");
+            ips.push(addr.ip.unwrap());
+
+            assert!(table.find_by_domain(domain).is_some());
+            assert!(table.find_by_ip(&addr.ip.unwrap()).is_some());
+        }
+
+        for domain in &domains {
+            table.cache.invalidate(*domain);
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        for domain in &domains {
+            assert!(table.cache.get(*domain).is_none());
+        }
+
+        for ip in &ips {
+            assert!(table.find_by_ip(ip).is_none());
+        }
+
+        for domain in &domains {
+            assert!(table.find_by_domain(domain).is_none());
+        }
+    }
+
+    #[test]
+    fn test_default_constructor_mapping_consistency() {
+        let table = DnsTable::default();
+
+        let addr = table.allocate(
+            "test.com",
+            Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),
+            "test",
+        );
+        let ip = addr.ip.unwrap();
+
+        assert!(table.cache.get("test.com").is_some());
+        assert!(table.find_by_domain("test.com").is_some());
+        assert!(table.find_by_ip(&ip).is_some());
+
+        table.cache.invalidate("test.com");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Verify mapping is also cleared (proves cache and mapping share the same Arc)
+        assert!(table.find_by_ip(&ip).is_none());
     }
 }

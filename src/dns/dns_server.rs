@@ -22,11 +22,11 @@ use tokio::{
 };
 
 use super::dns_handler::DnsHandler;
-use crate::config::ArcSetting;
+use crate::runtime::ArcRuntime;
 
-pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture<Handler>, Error> {
-    let mut name_servers = NameServerConfigGroup::with_capacity(setting.dns_upstream.len());
-    for upstream in setting.dns_upstream.iter() {
+pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<ServerFuture<Handler>, Error> {
+    let mut name_servers = NameServerConfigGroup::with_capacity(runtime.setting.dns_upstream.len());
+    for upstream in runtime.setting.dns_upstream.iter() {
         let mut upstream = upstream.clone();
         if !upstream.contains(':') {
             upstream.push_str(":53")
@@ -64,18 +64,27 @@ pub(crate) async fn build_dns_server(setting: ArcSetting) -> Result<ServerFuture
             .unwrap();
 
     let upstream = Arc::new(upstream);
-    let handler = DnsHandler::new(Box::new(upstream.clone()), setting.clone());
+    let handler = DnsHandler::new(Box::new(upstream.clone()), runtime.clone());
     let authority = HijackAuthority::new(Box::new(upstream.clone()), handler);
 
     let mut catalog = Catalog::new();
     catalog.upsert(LowerName::from(Name::root()), Box::new(authority));
 
     let mut server = ServerFuture::new(Handler { catalog });
-    log::info!("dns listen port: {}", setting.dns_port);
-    server
-        .register_socket(UdpSocket::bind(format!("{}:{}", setting.bind, setting.dns_port)).await?);
+    log::info!("dns listen port: {}", runtime.setting.dns_port);
+    server.register_socket(
+        UdpSocket::bind(format!(
+            "{}:{}",
+            runtime.setting.bind, runtime.setting.dns_port
+        ))
+        .await?,
+    );
     server.register_listener(
-        TcpListener::bind(format!("{}:{}", setting.bind, setting.dns_port)).await?,
+        TcpListener::bind(format!(
+            "{}:{}",
+            runtime.setting.bind, runtime.setting.dns_port
+        ))
+        .await?,
         Duration::from_secs(5),
     );
 
