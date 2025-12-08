@@ -11,20 +11,20 @@ use hickory_server::{
 };
 use log::{debug, error};
 use prometheus::{IntCounter, register_int_counter};
-use rayon::prelude::*;
 use std::{net::IpAddr, str::FromStr, sync::Arc, time::Duration};
 use tokio::time::timeout;
 
-use crate::config::{Addr, ArcSetting, setting::RuleType};
+use crate::config::Addr;
+use crate::runtime::ArcRuntime;
 
 pub(crate) struct DnsHandler {
     upstream: Box<dyn AuthorityObject>,
-    setting: ArcSetting,
+    runtime: ArcRuntime,
 }
 
 impl DnsHandler {
-    pub(crate) fn new(upstream: Box<dyn AuthorityObject>, setting: ArcSetting) -> Self {
-        Self { upstream, setting }
+    pub(crate) fn new(upstream: Box<dyn AuthorityObject>, runtime: ArcRuntime) -> Self {
+        Self { upstream, runtime }
     }
 
     pub(crate) async fn handle(
@@ -43,7 +43,7 @@ impl DnsHandler {
         }
 
         // metrics
-        if self.setting.metrics.is_some() {
+        if self.runtime.setting.metrics.is_some() {
             lazy_static! {
                 static ref DNS_QUERY: IntCounter =
                     register_int_counter!("dns_query_total", "Number of dns query").unwrap();
@@ -61,7 +61,7 @@ impl DnsHandler {
                 .collect::<Vec<_>>()
                 .join(".");
             if let Ok(addr) = ip.parse::<std::net::IpAddr>()
-                && let Some(v) = self.setting.dns_table.find_by_ip(&addr)
+                && let Some(v) = self.runtime.dns_table.find_by_ip(&addr)
             {
                 let mut records = RecordSet::with_ttl(query.name().into(), RecordType::PTR, 10);
                 let ptr = format!("{}.{}", domain, v.domain);
@@ -75,7 +75,7 @@ impl DnsHandler {
         let mut matching_rules = false;
 
         if should_handle {
-            let addr = self.setting.dns_table.find_by_domain(domain);
+            let addr = self.runtime.dns_table.find_by_domain(domain);
             match addr {
                 Some(Some(v)) => {
                     return Ok(Box::new(v));
@@ -121,15 +121,10 @@ impl DnsHandler {
     }
 
     pub(crate) async fn handle_hosts(&self, domain: &str) -> Option<Addr> {
-        let m = self
-            .setting
-            .hosts_match
-            .read()
-            .unwrap()
-            .match_domain(domain)?;
+        let m = self.runtime.hosts.read().unwrap().match_domain(domain)?;
 
         if let Ok(ip) = IpAddr::from_str(&m) {
-            return Some(self.setting.dns_table.allocate(domain, Some(ip), "host"));
+            return Some(self.runtime.dns_table.allocate(domain, Some(ip), "host"));
         }
 
         let name = Name::from_str(&m);
@@ -153,7 +148,7 @@ impl DnsHandler {
                     if let Some(v) = v.data()
                         && let Some(v) = v.as_a()
                     {
-                        return Some(self.setting.dns_table.allocate(
+                        return Some(self.runtime.dns_table.allocate(
                             domain,
                             Some(IpAddr::V4(**v)),
                             "host",
@@ -170,42 +165,27 @@ impl DnsHandler {
     }
 
     pub(crate) fn apply_before_rules(&self, domain: &str) -> Option<Addr> {
-        let rules = self.setting.rules.read().unwrap();
-        let rules = rules
-            .iter()
-            .filter(|&v| v.rule_type == RuleType::ExcludeDomain)
-            .collect::<Vec<_>>();
-
-        let find_exclude = rules.par_iter().find_map_any(|&r| {
-            if r.match_domain(domain).is_some() {
-                return Some(());
-            }
-            None
-        });
-
-        if find_exclude.is_some() {
+        // Check exclude rules first
+        if self.runtime.rules.find_exclude_domain(domain) {
             return None;
         }
 
-        let rules = self.setting.rules.read().unwrap();
-        let rules = rules
-            .iter()
-            .filter(|&v| v.rule_type == RuleType::Domain)
-            .collect::<Vec<_>>();
+        // Find domain-based rule
+        if let Some(matched) = self.runtime.rules.find_domain_rule(domain) {
+            let remark = format!(
+                "rule:{:?}, value:{}, target:{}",
+                matched.rule_type, matched.matched_value, matched.target
+            );
 
-        rules.par_iter().find_map_any(|&r| {
-            r.target.as_ref()?;
+            let addr = self
+                .runtime
+                .dns_table
+                .apply(domain, &matched.target, &remark);
 
-            if let Some(m) = r.match_domain(domain) {
-                let target = r.target.as_ref().unwrap();
-                let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, target);
+            return Some(addr);
+        }
 
-                let addr = self.setting.dns_table.apply(domain, target, &remark);
-
-                return Some(addr);
-            }
-            None
-        })
+        None
     }
 
     pub(crate) fn apply_post_rules(
@@ -213,49 +193,35 @@ impl DnsHandler {
         domain: &str,
         records: &dyn LookupObject,
     ) -> Option<Addr> {
-        let rules = self.setting.rules.read().unwrap();
-        let rules = rules
-            .iter()
-            .filter(|&v| v.rule_type == RuleType::DnsCidr)
-            .collect::<Vec<_>>();
-
-        if rules.is_empty() {
-            return None;
-        }
-
         let records = records
             .iter()
             .filter(|v| v.data().is_some() && v.data().unwrap().as_a().is_some())
             .collect::<Vec<_>>();
 
-        let ips = records
-            .par_iter()
-            .map(|v| {
-                if let Some(v) = v.data() {
-                    let r = match v {
-                        RData::A(v) => Some(IpAddr::V4(**v)),
-                        _ => None,
-                    };
-                    return r;
-                }
-                None
-            })
-            .collect::<Vec<_>>();
+        for record in records {
+            if let Some(data) = record.data() {
+                let ip = match data {
+                    RData::A(v) => Some(IpAddr::V4(**v)),
+                    _ => None,
+                };
 
-        let ips = ips.iter().flatten().collect::<Vec<_>>();
-
-        ips.par_iter().find_map_any(|&v| {
-            rules.par_iter().find_map_any(|&r| {
-                r.target.as_ref()?;
-                if let Some(m) = r.match_cidr(v) {
-                    let target = r.target.as_ref().unwrap();
-                    let remark = format!("rule:{:?}, value:{}, target:{}", r.rule_type, m, target);
-                    let addr = self.setting.dns_table.apply(domain, target, &remark);
+                if let Some(ip) = ip
+                    && let Some(matched) = self.runtime.rules.find_dns_cidr_rule(&ip)
+                {
+                    let remark = format!(
+                        "rule:{:?}, value:{}, target:{}",
+                        matched.rule_type, matched.matched_value, matched.target
+                    );
+                    let addr = self
+                        .runtime
+                        .dns_table
+                        .apply(domain, &matched.target, &remark);
 
                     return Some(addr);
                 }
-                None
-            })
-        })
+            }
+        }
+
+        None
     }
 }

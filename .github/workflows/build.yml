@@ -91,10 +91,10 @@ jobs:
       - name: Build image
         uses: docker/build-push-action@v6
         with:
+          push: false
           platforms: linux/amd64,linux/arm64
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           tags: |
-            yinheli/kungfu:latest
-            yinheli/kungfu:${{ github.ref_name }}
+            yinheli/kungfu:${{ github.sha }}

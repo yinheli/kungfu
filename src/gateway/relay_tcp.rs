@@ -5,26 +5,22 @@ use log::warn;
 use moka::sync::Cache;
 use prometheus::{IntCounterVec, register_int_counter_vec};
 use rand::prelude::IndexedRandom;
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{io::copy_bidirectional, net::TcpListener};
 
-use crate::{
-    config::{ArcSetting, setting::RuleType},
-    gateway::proxy::open_proxy,
-};
+use crate::{gateway::proxy::open_proxy, runtime::ArcRuntime};
 
 use super::nat::{Nat, Session};
 
 pub(crate) struct Relay {
-    setting: ArcSetting,
+    runtime: ArcRuntime,
     relay_addr: String,
     nat: Arc<Nat>,
 }
 
 impl Relay {
-    pub fn new(setting: ArcSetting, relay_addr: String, nat: Arc<Nat>) -> Self {
+    pub fn new(runtime: ArcRuntime, relay_addr: String, nat: Arc<Nat>) -> Self {
         Self {
-            setting,
+            runtime,
             relay_addr,
             nat,
         }
@@ -33,12 +29,12 @@ impl Relay {
     pub async fn serve(&self) {
         let server = TcpListener::bind(&self.relay_addr).await.unwrap();
         let nat = self.nat.clone();
-        let setting = self.setting.clone();
+        let runtime = self.runtime.clone();
 
         tokio::spawn(async move {
             while let Ok((stream, remote_addr)) = server.accept().await {
                 let nat = nat.clone();
-                let setting = setting.clone();
+                let runtime = runtime.clone();
 
                 tokio::spawn(async move {
                     let session = nat.find(remote_addr.port());
@@ -50,7 +46,7 @@ impl Relay {
                     let session = session.unwrap();
 
                     // proxy (name), target host, target port
-                    let target = find_target(setting.clone(), session);
+                    let target = find_target(runtime.clone(), session);
 
                     if target.is_none() {
                         return;
@@ -58,7 +54,7 @@ impl Relay {
 
                     let target = target.unwrap();
 
-                    let proxy = setting.proxy.iter().find(|&v| v.name == target.0);
+                    let proxy = runtime.setting.proxy.iter().find(|&v| v.name == target.0);
 
                     if proxy.is_none() {
                         warn!("proxy ({}) not found", target.0);
@@ -83,7 +79,7 @@ impl Relay {
                             let result = copy_bidirectional(&mut stream, &mut outbound).await;
 
                             if let Ok((up, down)) = result
-                                && setting.metrics.is_some()
+                                && runtime.setting.metrics.is_some()
                             {
                                 lazy_static! {
                                     static ref RELAY_COUNT: IntCounterVec =
@@ -150,22 +146,18 @@ fn random_proxy(proxy: &[String]) -> String {
     proxy.choose(&mut rng).unwrap().clone()
 }
 
-fn find_target(setting: ArcSetting, session: Session) -> Option<(String, String, u16)> {
-    if let Some(addr) = setting.dns_table.find_by_ip(&session.dst_addr.into()) {
+fn find_target(runtime: ArcRuntime, session: Session) -> Option<(String, String, u16)> {
+    if let Some(addr) = runtime.dns_table.find_by_ip(&session.dst_addr.into()) {
         return Some((addr.target, addr.domain, session.dst_port));
     }
 
-    let rules = setting.rules.read().unwrap();
-    let rules = rules.par_iter().filter(|&v| v.rule_type == RuleType::Route);
+    if let Some(matched) = runtime.rules.find_route_rule(&IpAddr::V4(session.dst_addr)) {
+        return Some((
+            matched.target,
+            session.dst_addr.to_string(),
+            session.dst_port,
+        ));
+    }
 
-    rules.find_map_any(|r| {
-        if r.target.is_some() && r.match_cidr(&IpAddr::V4(session.dst_addr)).is_some() {
-            return Some((
-                r.target.as_ref().unwrap().clone(),
-                session.dst_addr.to_string(),
-                session.dst_port,
-            ));
-        }
-        None
-    })
+    None
 }

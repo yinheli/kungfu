@@ -14,6 +14,8 @@ mod dns;
 mod gateway;
 mod logger;
 mod metrics;
+mod rule;
+mod runtime;
 
 fn main() {
     let cli = cli::Cli::parse();
@@ -26,7 +28,7 @@ fn main() {
         info!("Across the Great Wall, We can reach every corner in the world.");
     }
 
-    let setting = match config::load(&cli) {
+    let runtime = match config::load(&cli) {
         Ok(s) => s,
         Err(e) => {
             log::error!("load config file failed, {e:?}");
@@ -56,12 +58,12 @@ fn main() {
         .build()
         .unwrap();
 
-    let metrics_addr = setting.metrics.clone();
+    let metrics_addr = runtime.setting.metrics.clone();
 
     rt.block_on(async move {
         join!(
-            gateway::serve(setting.clone()),
-            dns::serve(setting.clone()),
+            gateway::serve(runtime.clone()),
+            dns::serve(runtime.clone()),
             metrics::serve(metrics_addr),
         )
     });
