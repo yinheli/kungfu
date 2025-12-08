@@ -1,10 +1,10 @@
-FROM --platform=$BUILDPLATFORM rust:1.75-bookworm as builder
+FROM --platform=$BUILDPLATFORM rust:1.91-trixie as builder
 WORKDIR /app
 RUN rustup override set nightly
 COPY . .
 RUN cargo build --release
 
-FROM --platform=$BUILDPLATFORM debian:bookworm-slim
+FROM --platform=$BUILDPLATFORM debian:trixie-slim
 LABEL org.opencontainers.image.authors "yinheli"
 LABEL org.opencontainers.image.source https://github.com/yinheli/kungfu
 RUN apt-get update && \
