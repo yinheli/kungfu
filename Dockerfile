@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM rust:1.91-trixie as builder
+FROM --platform=$BUILDPLATFORM rust:1.91-trixie AS builder
 WORKDIR /app
 RUN rustup override set nightly
 COPY . .
