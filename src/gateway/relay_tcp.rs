@@ -1,15 +1,15 @@
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use log::warn;
-
-use moka::sync::Cache;
-use prometheus::{IntCounterVec, register_int_counter_vec};
-use rand::prelude::IndexedRandom;
 use tokio::{io::copy_bidirectional, net::TcpListener};
 
 use crate::{gateway::proxy::open_proxy, runtime::ArcRuntime};
 
-use super::nat::{Nat, Session};
+use super::{
+    common,
+    nat::Nat,
+    stats::{self, Protocol},
+};
 
 pub(crate) struct Relay {
     runtime: ArcRuntime,
@@ -45,8 +45,7 @@ impl Relay {
 
                     let session = session.unwrap();
 
-                    // proxy (name), target host, target port
-                    let target = find_target(runtime.clone(), session);
+                    let target = common::find_target(runtime.clone(), session);
 
                     if target.is_none() {
                         return;
@@ -62,7 +61,7 @@ impl Relay {
                     }
 
                     let proxy = proxy.unwrap();
-                    let proxy_url = random_proxy(&proxy.values);
+                    let proxy_url = common::random_proxy(&proxy.values);
 
                     let outbound = open_proxy(proxy_url, &target.1, target.2).await;
 
@@ -78,54 +77,15 @@ impl Relay {
 
                             let result = copy_bidirectional(&mut stream, &mut outbound).await;
 
-                            if let Ok((up, down)) = result
-                                && runtime.setting.metrics.is_some()
-                            {
-                                lazy_static! {
-                                    static ref RELAY_COUNT: IntCounterVec =
-                                        register_int_counter_vec!(
-                                            "relay_total",
-                                            "Number of bytes relay by proxy",
-                                            &["action", "proxy"]
-                                        )
-                                        .unwrap();
-                                    static ref RELAY_HOST_COUNT: IntCounterVec =
-                                        register_int_counter_vec!(
-                                            "relay_host_total",
-                                            "Number of bytes relay by domain (latest 100 domains)",
-                                            &["action", "domain"]
-                                        )
-                                        .unwrap();
-                                    static ref RELAY_COUNT_CACHE: Cache<String, u8> =
-                                        Cache::builder()
-                                            .max_capacity(100)
-                                            .time_to_live(Duration::from_secs(60))
-                                            .eviction_listener(|k: Arc<String>, _, c| {
-                                                if c.was_evicted() {
-                                                    let _ = RELAY_HOST_COUNT
-                                                        .remove_label_values(&["upload", &k]);
-                                                    let _ = RELAY_HOST_COUNT
-                                                        .remove_label_values(&["download", &k]);
-                                                }
-                                            })
-                                            .build();
-                                }
-
-                                RELAY_COUNT
-                                    .with_label_values(&["upload", &proxy.name])
-                                    .inc_by(up);
-                                RELAY_COUNT
-                                    .with_label_values(&["download", &proxy.name])
-                                    .inc_by(down);
-
-                                RELAY_HOST_COUNT
-                                    .with_label_values(&["upload", &target.1])
-                                    .inc_by(up);
-                                RELAY_HOST_COUNT
-                                    .with_label_values(&["download", &target.1])
-                                    .inc_by(down);
-
-                                RELAY_COUNT_CACHE.insert(target.1.clone(), 0);
+                            if let Ok((up, down)) = result {
+                                stats::update_metrics(
+                                    &runtime,
+                                    Protocol::Tcp,
+                                    &proxy.name,
+                                    &target.1,
+                                    up,
+                                    down,
+                                );
                             }
                         }
                         Err(e) => {
@@ -136,28 +96,4 @@ impl Relay {
             }
         });
     }
-}
-
-fn random_proxy(proxy: &[String]) -> String {
-    if proxy.len() == 1 {
-        return proxy[0].clone();
-    }
-    let mut rng = rand::rng();
-    proxy.choose(&mut rng).unwrap().clone()
-}
-
-fn find_target(runtime: ArcRuntime, session: Session) -> Option<(String, String, u16)> {
-    if let Some(addr) = runtime.dns_table.find_by_ip(&session.dst_addr.into()) {
-        return Some((addr.target, addr.domain, session.dst_port));
-    }
-
-    if let Some(matched) = runtime.rules.find_route_rule(&IpAddr::V4(session.dst_addr)) {
-        return Some((
-            matched.target,
-            session.dst_addr.to_string(),
-            session.dst_port,
-        ));
-    }
-
-    None
 }

@@ -23,11 +23,13 @@ use tun::AsyncDevice;
 use super::{
     nat::{Nat, Type},
     relay_tcp,
+    relay_udp::UdpRelay,
 };
 
 pub async fn serve(runtime: ArcRuntime) {
     let tcp_nat = Arc::new(Nat::new(Type::Tcp));
-    Gateway::new(runtime, tcp_nat).serve().await;
+    let udp_nat = Arc::new(Nat::new(Type::Udp));
+    Gateway::new(runtime, tcp_nat, udp_nat).serve().await;
 }
 
 struct Gateway {
@@ -35,29 +37,37 @@ struct Gateway {
     gateway: Ipv4Addr,
     network: IpNet,
     tcp_nat: Arc<Nat>,
+    udp_nat: Arc<Nat>,
     relay_port: u16,
+    udp_relay: Arc<UdpRelay>,
 }
 
 impl Gateway {
-    fn new(runtime: ArcRuntime, tcp_nat: Arc<Nat>) -> Self {
-        let network = IpNet::from_str(&runtime.setting.network).unwrap();
+    fn new(runtime: ArcRuntime, tcp_nat: Arc<Nat>, udp_nat: Arc<Nat>) -> Self {
+        let network =
+            IpNet::from_str(&runtime.setting.network).expect("Invalid network configuration");
         let gateway = match network {
             IpNet::V4(v) => v.addr(),
-            IpNet::V6(_) => panic!("not supported yet"),
+            IpNet::V6(_) => panic!("IPv6 not supported yet"),
         };
 
         let relay_port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
+            .expect("Failed to bind to random port")
             .local_addr()
-            .unwrap()
+            .expect("Failed to get local address")
             .port();
+
+        // Create UDP relay instance once and reuse
+        let udp_relay = Arc::new(UdpRelay::new(runtime.clone(), udp_nat.clone()));
 
         Self {
             runtime,
             gateway,
             network,
             tcp_nat,
+            udp_nat,
             relay_port,
+            udp_relay,
         }
     }
 
@@ -212,7 +222,7 @@ impl Gateway {
         let src = v4.get_source();
         let dst = v4.get_destination();
         let ttl = v4.get_ttl();
-        let _src_port = packet.get_source();
+        let src_port = packet.get_source();
         let dst_port = packet.get_destination();
 
         // trace route
@@ -250,7 +260,62 @@ impl Gateway {
             return Some(p.packet().to_vec());
         }
 
-        None
+        // Check if this is a packet that should be proxied
+        if !self.network.hosts().any(|v| v == dst) {
+            return None;
+        }
+
+        // Create UDP session
+        let session = self.udp_nat.create(src, src_port, dst, dst_port);
+
+        // Extract UDP payload
+        let udp_payload = packet.payload();
+
+        // Handle packet with reusable UDP relay
+        match self.udp_relay.handle_packet(session, udp_payload).await {
+            Ok(Some(response_data)) => {
+                // Build response UDP packet
+                let response_len = response_data.len();
+                let udp_total_len = 8 + response_len; // UDP header + data
+                let mut udp_buf = BytesMut::zeroed(udp_total_len);
+                let mut udp_packet = MutableUdpPacket::new(&mut udp_buf).unwrap();
+
+                udp_packet.set_source(dst_port);
+                udp_packet.set_destination(src_port);
+                udp_packet.set_length(udp_total_len as u16);
+                udp_packet.set_payload(&response_data);
+                udp_packet.set_checksum(pnet::packet::udp::ipv4_checksum(
+                    &udp_packet.to_immutable(),
+                    &dst,
+                    &src,
+                ));
+
+                // Build IP packet
+                let ip_total_len = v4.get_header_length() as usize * 4 + udp_total_len;
+                let mut ip_buf = BytesMut::zeroed(ip_total_len);
+                let mut ip_packet = MutableIpv4Packet::new(&mut ip_buf).unwrap();
+
+                ip_packet.set_version(4);
+                ip_packet.set_header_length(v4.get_header_length());
+                ip_packet.set_total_length(ip_total_len as u16);
+                ip_packet.set_source(dst);
+                ip_packet.set_destination(src);
+                ip_packet.set_ttl(64);
+                ip_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+                ip_packet.set_payload(udp_packet.packet());
+                ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
+
+                Some(ip_packet.packet().to_vec())
+            }
+            Ok(None) => {
+                // No response (normal for UDP)
+                None
+            }
+            Err(e) => {
+                error!("UDP relay error: {}", e);
+                None
+            }
+        }
     }
 
     async fn handle_tcp_v4(&self, v4: &mut MutableIpv4Packet<'_>) -> Option<Vec<u8>> {

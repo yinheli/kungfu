@@ -6,6 +6,7 @@ use std::{
 };
 
 use moka::sync::Cache;
+use rand::random;
 
 pub struct Nat {
     nat_type: Type,
@@ -56,7 +57,15 @@ impl Nat {
         }
 
         let nat_port = {
-            let mapping = self.mapping.read().unwrap();
+            let mapping = match self.mapping.read() {
+                Ok(m) => m,
+                Err(_) => {
+                    // If lock is poisoned, create new mapping
+                    return self
+                        .create_with_new_mapping(src_addr, src_port, dst_addr, dst_port, addr_key);
+                }
+            };
+
             if let Some(&port) = mapping.get_by_left(&addr_key) {
                 return Session {
                     src_addr,
@@ -80,8 +89,38 @@ impl Nat {
 
         self.cache.insert(addr_key, session.clone());
 
-        let mut mapping = self.mapping.write().unwrap();
-        mapping.insert(addr_key, nat_port);
+        if let Ok(mut mapping) = self.mapping.write() {
+            mapping.insert(addr_key, nat_port);
+        }
+
+        *session
+    }
+
+    fn create_with_new_mapping(
+        &self,
+        src_addr: Ipv4Addr,
+        src_port: u16,
+        dst_addr: Ipv4Addr,
+        dst_port: u16,
+        addr_key: u32,
+    ) -> Session {
+        let nat_port = self.get_available_port();
+
+        let session = Arc::new(Session {
+            src_addr,
+            dst_addr,
+            src_port,
+            dst_port,
+            nat_port,
+        });
+
+        self.cache.insert(addr_key, session.clone());
+
+        // Try to update mapping, if it fails we still have a valid session
+        let _ = self
+            .mapping
+            .write()
+            .map(|mut m| m.insert(addr_key, nat_port));
 
         *session
     }
@@ -100,24 +139,24 @@ impl Nat {
     pub fn clear(&self) {
         self.cache.invalidate_all();
 
-        let mut mapping = self.mapping.write().unwrap();
-        mapping.clear();
+        if let Ok(mut mapping) = self.mapping.write() {
+            mapping.clear();
+        }
     }
 
     #[allow(dead_code)]
     pub fn stats(&self) -> (usize, usize) {
-        let mapping = self.mapping.read().unwrap();
-        (mapping.len(), self.cache.entry_count() as usize)
+        let mapping_count = self.mapping.read().map(|m| m.len()).unwrap_or(0);
+        (mapping_count, self.cache.entry_count() as usize)
     }
 
     fn new_cache(ttl: Duration, mapping: Arc<RwLock<BiMap<u32, u16>>>) -> Cache<u32, Arc<Session>> {
         let mapping_clone = mapping.clone();
 
         let eviction_listener = move |addr_key: Arc<u32>, _session: Arc<Session>, _cause| {
-            let mut mapping_guard = mapping_clone.write().unwrap();
-            if let Some((_removed_addr_key, _removed_nat_port)) =
-                mapping_guard.remove_by_left(&*addr_key)
-            {}
+            if let Ok(mut mapping_guard) = mapping_clone.write() {
+                let _ = mapping_guard.remove_by_left(&*addr_key);
+            }
         };
 
         Cache::builder()
@@ -128,19 +167,49 @@ impl Nat {
     }
 
     fn get_addr_key_by_port_fast(&self, nat_port: &u16) -> Option<u32> {
-        let mapping = self.mapping.read().unwrap();
-        mapping.get_by_right(nat_port).copied()
+        self.mapping
+            .read()
+            .ok()
+            .and_then(|m| m.get_by_right(nat_port).copied())
     }
 
     fn get_available_port(&self) -> u16 {
         match self.nat_type {
             Type::Tcp => {
-                let ln = net::TcpListener::bind("127.0.0.1:0").unwrap();
-                ln.local_addr().unwrap().port()
+                let ln = net::TcpListener::bind("127.0.0.1:0");
+                match ln {
+                    Ok(listener) => {
+                        match listener.local_addr() {
+                            Ok(addr) => addr.port(),
+                            Err(_) => {
+                                // Fallback to a random high port
+                                random::<u16>().max(1024)
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Fallback to a random high port
+                        random::<u16>().max(1024)
+                    }
+                }
             }
             Type::Udp => {
-                let ln = net::UdpSocket::bind("127.0.0.1:0").unwrap();
-                ln.local_addr().unwrap().port()
+                let ln = net::UdpSocket::bind("127.0.0.1:0");
+                match ln {
+                    Ok(socket) => {
+                        match socket.local_addr() {
+                            Ok(addr) => addr.port(),
+                            Err(_) => {
+                                // Fallback to a random high port
+                                random::<u16>().max(1024)
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Fallback to a random high port
+                        random::<u16>().max(1024)
+                    }
+                }
             }
         }
     }
