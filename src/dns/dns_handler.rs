@@ -121,7 +121,7 @@ impl DnsHandler {
     }
 
     pub(crate) async fn handle_hosts(&self, domain: &str) -> Option<Addr> {
-        let m = self.runtime.hosts.read().unwrap().match_domain(domain)?;
+        let m = self.runtime.hosts.read().match_domain(domain)?;
 
         if let Ok(ip) = IpAddr::from_str(&m) {
             return Some(self.runtime.dns_table.allocate(domain, Some(ip), "host"));

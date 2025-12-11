@@ -1,4 +1,5 @@
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use crate::config::{DnsTable, Hosts, setting::Setting};
 use crate::rule::Rules;

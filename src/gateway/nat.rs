@@ -1,7 +1,8 @@
 use bimap::BiMap;
+use parking_lot::RwLock;
 use std::{
     net::{self, Ipv4Addr},
-    sync::{Arc, RwLock},
+    sync::Arc,
     time::Duration,
 };
 
@@ -16,7 +17,6 @@ pub struct Nat {
 
 pub enum Type {
     Tcp,
-    #[allow(dead_code)]
     Udp,
 }
 
@@ -57,14 +57,7 @@ impl Nat {
         }
 
         let nat_port = {
-            let mapping = match self.mapping.read() {
-                Ok(m) => m,
-                Err(_) => {
-                    // If lock is poisoned, create new mapping
-                    return self
-                        .create_with_new_mapping(src_addr, src_port, dst_addr, dst_port, addr_key);
-                }
-            };
+            let mapping = self.mapping.read();
 
             if let Some(&port) = mapping.get_by_left(&addr_key) {
                 return Session {
@@ -89,38 +82,10 @@ impl Nat {
 
         self.cache.insert(addr_key, session.clone());
 
-        if let Ok(mut mapping) = self.mapping.write() {
+        {
+            let mut mapping = self.mapping.write();
             mapping.insert(addr_key, nat_port);
         }
-
-        *session
-    }
-
-    fn create_with_new_mapping(
-        &self,
-        src_addr: Ipv4Addr,
-        src_port: u16,
-        dst_addr: Ipv4Addr,
-        dst_port: u16,
-        addr_key: u32,
-    ) -> Session {
-        let nat_port = self.get_available_port();
-
-        let session = Arc::new(Session {
-            src_addr,
-            dst_addr,
-            src_port,
-            dst_port,
-            nat_port,
-        });
-
-        self.cache.insert(addr_key, session.clone());
-
-        // Try to update mapping, if it fails we still have a valid session
-        let _ = self
-            .mapping
-            .write()
-            .map(|mut m| m.insert(addr_key, nat_port));
 
         *session
     }
@@ -139,14 +104,15 @@ impl Nat {
     pub fn clear(&self) {
         self.cache.invalidate_all();
 
-        if let Ok(mut mapping) = self.mapping.write() {
+        {
+            let mut mapping = self.mapping.write();
             mapping.clear();
         }
     }
 
     #[allow(dead_code)]
     pub fn stats(&self) -> (usize, usize) {
-        let mapping_count = self.mapping.read().map(|m| m.len()).unwrap_or(0);
+        let mapping_count = self.mapping.read().len();
         (mapping_count, self.cache.entry_count() as usize)
     }
 
@@ -154,9 +120,8 @@ impl Nat {
         let mapping_clone = mapping.clone();
 
         let eviction_listener = move |addr_key: Arc<u32>, _session: Arc<Session>, _cause| {
-            if let Ok(mut mapping_guard) = mapping_clone.write() {
-                let _ = mapping_guard.remove_by_left(&*addr_key);
-            }
+            let mut mapping_guard = mapping_clone.write();
+            let _ = mapping_guard.remove_by_left(&*addr_key);
         };
 
         Cache::builder()
@@ -167,10 +132,8 @@ impl Nat {
     }
 
     fn get_addr_key_by_port_fast(&self, nat_port: &u16) -> Option<u32> {
-        self.mapping
-            .read()
-            .ok()
-            .and_then(|m| m.get_by_right(nat_port).copied())
+        let mapping = self.mapping.read();
+        mapping.get_by_right(nat_port).copied()
     }
 
     fn get_available_port(&self) -> u16 {

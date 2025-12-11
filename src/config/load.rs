@@ -8,10 +8,11 @@ use ipnet::IpNet;
 use log::{debug, error, info};
 use notify::RecursiveMode;
 use notify_debouncer_mini::Debouncer;
+use parking_lot::{Mutex, RwLock};
 use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{fs, path::PathBuf};
 
@@ -169,12 +170,12 @@ fn watch(runtime: ArcRuntime, rules_dir: PathBuf) {
 
     let w = deboncer.watcher();
     w.watch(dir.as_path(), RecursiveMode::NonRecursive).unwrap();
-    WATCHERS.lock().unwrap().push(deboncer);
+    WATCHERS.lock().push(deboncer);
 }
 
 fn reload_hosts(runtime: &RuntimeContext, host_file: PathBuf) -> Result<(), Error> {
     let hosts = load_hosts_file(host_file)?;
-    *runtime.hosts.write().unwrap() = hosts;
+    *runtime.hosts.write() = hosts;
     runtime.dns_table.clear();
     Ok(())
 }

@@ -8,11 +8,11 @@ use anyhow::{Result, anyhow};
 use bytes::{BufMut, BytesMut};
 use log::debug;
 use moka::sync::Cache;
+use parking_lot::RwLock;
 use std::net::{IpAddr, Ipv4Addr};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
-    sync::RwLock,
     time::timeout,
 };
 use url::Url;
@@ -94,11 +94,11 @@ impl UdpAssociation {
     }
 
     async fn is_expired(&self) -> bool {
-        self.last_active.read().await.elapsed() > UDP_SESSION_TTL
+        self.last_active.read().elapsed() > UDP_SESSION_TTL
     }
 
     async fn touch(&self) {
-        *self.last_active.write().await = Instant::now();
+        *self.last_active.write() = Instant::now();
     }
 }
 
