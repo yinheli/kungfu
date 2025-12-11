@@ -20,7 +20,6 @@ anyhow = { version="1", default-features = false }
 async-trait = "0.1"
 bimap = "0.6"
 bytes = "1"
-chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 fast-socks5 = "0.10"
