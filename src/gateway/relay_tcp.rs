@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use log::{debug, warn};
+use log::debug;
 use tokio::{
     io::{AsyncRead, AsyncWrite, copy_bidirectional},
     net::{TcpListener, TcpStream},
@@ -26,13 +26,13 @@ use super::{
 const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-pub(crate) struct Relay {
+pub(crate) struct TcpRelay {
     runtime: ArcRuntime,
     relay_addr: String,
     nat: Arc<Nat>,
 }
 
-impl Relay {
+impl TcpRelay {
     pub fn new(runtime: ArcRuntime, relay_addr: String, nat: Arc<Nat>) -> Self {
         Self {
             runtime,
@@ -55,9 +55,7 @@ impl Relay {
                 let runtime = runtime.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, remote_addr, nat, runtime).await {
-                        warn!("Connection handling failed: {}", e);
-                    }
+                    let _ = handle_connection(stream, remote_addr, nat, runtime).await;
                 });
             }
         });

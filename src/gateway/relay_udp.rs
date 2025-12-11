@@ -1,33 +1,26 @@
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Result, anyhow};
 use bytes::{BufMut, BytesMut};
 use log::debug;
 use moka::sync::Cache;
-use parking_lot::RwLock;
+
 use std::net::{IpAddr, Ipv4Addr};
+use tokio::sync::Mutex;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
+    sync::mpsc::Receiver,
     time::timeout,
 };
 use url::Url;
 
-use super::{
-    common,
-    nat::{Nat, Session},
-    stats::{self, Protocol},
-};
-use crate::runtime::ArcRuntime;
+use super::{common, nat::Session};
+use crate::{gateway::stats, runtime::ArcRuntime};
 
-const UDP_SESSION_TTL: Duration = Duration::from_secs(300);
 const UDP_BUFFER_SIZE: usize = 1500;
 const UDP_ASSOCIATE_TIMEOUT: Duration = Duration::from_secs(5);
-const UDP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+const UDP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SOCKS5_UDP_HEADER_MIN: usize = 10; // RSV(2) + FRAG(1) + ATYP(1) + LEN(1) + PORT(2)
 
 /// SOCKS5 reply descriptions indexed by reply code
@@ -48,57 +41,72 @@ struct UdpAssociation {
     _tcp_control: TcpStream,
     udp_socket: Arc<UdpSocket>,
     socks_udp_addr: SocketAddr,
-    last_active: RwLock<Instant>,
 }
 
 impl UdpAssociation {
-    async fn new(proxy_url: &str) -> Result<Self> {
+    async fn new(proxy_url: &str, nat_port: u16) -> Result<Self> {
         let url = Url::parse(proxy_url)?;
         let host = url.host().ok_or_else(|| anyhow!("missing host"))?;
         let port = url.port().unwrap_or(1080);
 
         let proxy_addr = format!("{}:{}", host, port);
-        let mut tcp_stream = TcpStream::connect(&proxy_addr).await?;
+        let mut tcp_control = TcpStream::connect(&proxy_addr).await?;
 
         // SOCKS5 handshake
         if url.username() != "" {
             perform_auth(
-                &mut tcp_stream,
+                &mut tcp_control,
                 url.username(),
                 url.password().unwrap_or(""),
             )
             .await?;
         } else {
-            perform_no_auth(&mut tcp_stream).await?;
+            perform_no_auth(&mut tcp_control).await?;
         }
 
-        let socks_udp_addr = perform_udp_associate(&mut tcp_stream).await?;
+        let socks_udp_addr = perform_udp_associate(&mut tcp_control).await?;
 
         // Some SOCKS5 proxies return 0.0.0.0 but expect UDP on the same port as TCP
-        let final_udp_addr = if socks_udp_addr.ip().is_unspecified() {
+        let socks_udp_addr = if socks_udp_addr.ip().is_unspecified() {
             // Use the same host as the TCP connection but the port returned by UDP ASSOCIATE
-            let peer_addr = tcp_stream.peer_addr()?;
+            let peer_addr = tcp_control.peer_addr()?;
             SocketAddr::new(peer_addr.ip(), socks_udp_addr.port())
         } else {
             socks_udp_addr
         };
 
-        let local_udp = UdpSocket::bind("0.0.0.0:0").await?;
+        let udp_socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", nat_port)).await?);
 
         Ok(Self {
-            _tcp_control: tcp_stream,
-            udp_socket: Arc::new(local_udp),
-            socks_udp_addr: final_udp_addr,
-            last_active: RwLock::new(Instant::now()),
+            _tcp_control: tcp_control,
+            udp_socket,
+            socks_udp_addr,
         })
     }
 
-    async fn is_expired(&self) -> bool {
-        self.last_active.read().elapsed() > UDP_SESSION_TTL
+    async fn send(&self, data: &[u8]) -> Result<usize> {
+        self.udp_socket
+            .send_to(data, self.socks_udp_addr)
+            .await
+            .map_err(|e| e.into())
     }
 
-    async fn touch(&self) {
-        *self.last_active.write() = Instant::now();
+    async fn recv(&self) -> Result<Option<Vec<u8>>> {
+        let mut buf = vec![0u8; UDP_BUFFER_SIZE];
+        match timeout(UDP_RESPONSE_TIMEOUT, self.udp_socket.recv_from(&mut buf))
+            .await
+            .map_err(|e| anyhow!("UDP receive timeout: {}", e))?
+            .map(|(len, _)| len)
+        {
+            Ok(len) => {
+                buf.truncate(len);
+                Ok(Some(buf))
+            }
+            Err(e) => {
+                debug!("receive error:{}", e);
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -298,88 +306,54 @@ fn decode_socks5_udp(buf: &[u8]) -> Result<(String, u16, Vec<u8>)> {
 
 pub(crate) struct UdpRelay {
     runtime: ArcRuntime,
-    _nat: Arc<Nat>,
-    associations: Cache<String, Arc<UdpAssociation>>,
+    associations: Cache<u16, Arc<UdpAssociation>>,
+    lock: Mutex<HashMap<u16, Arc<Mutex<Option<()>>>>>,
 }
 
 impl UdpRelay {
-    pub fn new(runtime: ArcRuntime, nat: Arc<Nat>) -> Self {
-        let associations = Cache::builder()
-            .time_to_live(UDP_SESSION_TTL)
-            .eviction_listener(|key, assoc: Arc<UdpAssociation>, cause| {
-                debug!(
-                    "UDP association for proxy {} expired, cause: {:?}",
-                    key, cause
-                );
-                tokio::spawn(async move {
-                    if assoc.is_expired().await {
-                        debug!("Removed expired UDP association: {}", key);
-                    }
-                });
-            })
-            .build();
+    pub fn new(runtime: ArcRuntime, rx: Receiver<u16>) -> Self {
+        let associations = Cache::builder().build();
+
+        let invalidates = associations.clone();
+        tokio::spawn(async move {
+            let mut rx = rx;
+            while let Some(nat_port) = rx.recv().await {
+                invalidates.invalidate(&nat_port);
+            }
+        });
 
         Self {
             runtime,
-            _nat: nat,
             associations,
+            lock: Default::default(),
         }
     }
 
-    pub async fn handle_packet(&self, session: Session, payload: &[u8]) -> Result<Option<Vec<u8>>> {
-        let target = self.find_target(session)?;
-        let (proxy_name, target_host, target_port) = target;
-
-        let assoc = self.get_or_create_association(&proxy_name).await?;
-
-        let max_payload = UDP_BUFFER_SIZE - (SOCKS5_UDP_HEADER_MIN + target_host.len());
-        if payload.len() > max_payload {
-            debug!("UDP payload too large: {} > {}", payload.len(), max_payload);
-            return Ok(None);
+    async fn get_or_create_association<F, Fut>(
+        &self,
+        proxy_name: &str,
+        target_host: &str,
+        nat_port: u16,
+        callback: F,
+    ) -> Result<Arc<UdpAssociation>>
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send,
+    {
+        if let Some(assoc) = self.associations.get(&nat_port) {
+            return Ok(assoc);
         }
+        let pending_lock = {
+            let mut pending = self.lock.lock().await;
+            pending
+                .entry(nat_port)
+                .or_insert(Arc::new(Default::default()))
+                .clone()
+        };
 
-        let encoded = encode_socks5_udp(&target_host, target_port, payload)?;
-        assoc
-            .udp_socket
-            .send_to(&encoded, assoc.socks_udp_addr)
-            .await?;
+        let _guard = pending_lock.lock().await;
 
-        assoc.touch().await;
-
-        let udp_socket = assoc.udp_socket.clone();
-        let expected_addr = assoc.socks_udp_addr;
-
-        match timeout(UDP_RESPONSE_TIMEOUT, async {
-            let mut buf = [0u8; UDP_BUFFER_SIZE];
-            let (len, from_addr) = udp_socket.recv_from(&mut buf).await?;
-
-            if from_addr != expected_addr {
-                return Err(anyhow!("UDP response from unexpected address"));
-            }
-            let data = buf[..len].to_vec();
-            Ok::<_, anyhow::Error>(data)
-        })
-        .await
-        {
-            Ok(Ok(response)) => {
-                let (_, _, data) = decode_socks5_udp(&response)?;
-                stats::update_metrics(
-                    &self.runtime,
-                    Protocol::Udp,
-                    &proxy_name,
-                    &target_host,
-                    payload.len() as u64,
-                    data.len() as u64,
-                );
-                Ok(Some(data))
-            }
-            Ok(Err(_)) => Ok(None),
-            Err(_) => Ok(None), // Timeout is normal for UDP
-        }
-    }
-
-    async fn get_or_create_association(&self, proxy_name: &str) -> Result<Arc<UdpAssociation>> {
-        if let Some(assoc) = self.associations.get(proxy_name) {
+        if let Some(assoc) = self.associations.get(&nat_port) {
             return Ok(assoc);
         }
 
@@ -398,14 +372,78 @@ impl UdpRelay {
 
         let proxy_url = common::random_proxy(&proxy_config.values);
 
-        let assoc = timeout(UDP_ASSOCIATE_TIMEOUT, UdpAssociation::new(&proxy_url)).await??;
+        let assoc = timeout(
+            UDP_ASSOCIATE_TIMEOUT,
+            UdpAssociation::new(&proxy_url, nat_port),
+        )
+        .await??;
         let assoc = Arc::new(assoc);
-        self.associations
-            .insert(proxy_name.to_string(), assoc.clone());
+        self.associations.insert(nat_port, assoc.clone());
+
+        let assoc_clone = assoc.clone();
+        let runtime = self.runtime.clone();
+        let proxy_name = proxy_name.to_string();
+        let target_host = target_host.to_string();
+        tokio::spawn(async move {
+            while let Ok(Some(data)) = assoc_clone.recv().await {
+                if let Ok((_src_addr, _src_port, data)) = decode_socks5_udp(&data) {
+                    let down = data.len() as u64;
+                    callback(data).await;
+                    stats::update_metrics(
+                        &runtime,
+                        stats::Protocol::Udp,
+                        &proxy_name,
+                        &target_host,
+                        0,
+                        down,
+                    );
+                }
+            }
+        });
+
         Ok(assoc)
     }
 
-    fn find_target(&self, session: Session) -> Result<(String, String, u16)> {
+    pub async fn send<F, Fut>(
+        &self,
+        session: Session,
+        payload: Vec<u8>,
+        callback: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send,
+    {
+        let nat_port = session.nat_port;
+        let target = self.find_target(session)?;
+        let (proxy_name, target_host, target_port) = target;
+        let max_payload = UDP_BUFFER_SIZE - (SOCKS5_UDP_HEADER_MIN + target_host.len());
+        if payload.len() > max_payload {
+            debug!("UDP payload too large: {} > {}", payload.len(), max_payload);
+            return Ok(());
+        }
+
+        let assoc = self
+            .get_or_create_association(&proxy_name, &target_host, nat_port, callback)
+            .await?;
+
+        let encoded = encode_socks5_udp(&target_host, target_port, &payload)?;
+
+        let _ = assoc.send(&encoded).await?;
+
+        stats::update_metrics(
+            &self.runtime,
+            stats::Protocol::Udp,
+            &proxy_name,
+            &target_host,
+            payload.len() as u64,
+            0,
+        );
+
+        Ok(())
+    }
+
+    fn find_target(&self, session: Session) -> anyhow::Result<(String, String, u16)> {
         common::find_target(self.runtime.clone(), session)
             .ok_or_else(|| anyhow!("No route found for {}", session.dst_addr))
     }

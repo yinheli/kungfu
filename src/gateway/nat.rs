@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::sync::mpsc::Sender;
 
 use moka::sync::Cache;
 use rand::random;
@@ -30,11 +31,11 @@ pub struct Session {
 }
 
 impl Nat {
-    pub fn new(nat_type: Type) -> Self {
-        let ttl = Duration::from_secs(60 * 10);
+    pub fn new(nat_type: Type, tx: Option<Sender<u16>>) -> Self {
+        let ttl = Duration::from_secs(30);
 
         let mapping = Arc::new(RwLock::new(BiMap::new()));
-        let cache = Self::new_cache(ttl, mapping.clone());
+        let cache = Self::new_cache(ttl, mapping.clone(), tx);
 
         Self {
             nat_type,
@@ -59,13 +60,13 @@ impl Nat {
         let nat_port = {
             let mapping = self.mapping.read();
 
-            if let Some(&port) = mapping.get_by_left(&addr_key) {
+            if let Some(&nat_port) = mapping.get_by_left(&addr_key) {
                 return Session {
                     src_addr,
                     dst_addr,
                     src_port,
                     dst_port,
-                    nat_port: port,
+                    nat_port,
                 };
             }
 
@@ -116,17 +117,25 @@ impl Nat {
         (mapping_count, self.cache.entry_count() as usize)
     }
 
-    fn new_cache(ttl: Duration, mapping: Arc<RwLock<BiMap<u32, u16>>>) -> Cache<u32, Arc<Session>> {
+    fn new_cache(
+        ttl: Duration,
+        mapping: Arc<RwLock<BiMap<u32, u16>>>,
+        tx: Option<Sender<u16>>,
+    ) -> Cache<u32, Arc<Session>> {
         let mapping_clone = mapping.clone();
 
-        let eviction_listener = move |addr_key: Arc<u32>, _session: Arc<Session>, _cause| {
+        let eviction_listener = move |addr_key: Arc<u32>, session: Arc<Session>, _cause| {
             let mut mapping_guard = mapping_clone.write();
             let _ = mapping_guard.remove_by_left(&*addr_key);
+            if let Some(ref tx) = tx {
+                // ignore send error
+                let _ = tx.try_send(session.nat_port);
+            }
         };
 
         Cache::builder()
             .max_capacity(5000)
-            .time_to_live(ttl)
+            .time_to_idle(ttl)
             .eviction_listener(eviction_listener)
             .build()
     }
@@ -184,7 +193,7 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let tcp_nat = Nat::new(Type::Tcp);
+        let tcp_nat = Nat::new(Type::Tcp, None);
         let session = tcp_nat.create(
             Ipv4Addr::new(127, 0, 0, 1),
             32,
@@ -198,7 +207,7 @@ mod tests {
         assert!(session2.is_some());
         assert_eq!(session2.unwrap(), session);
 
-        let udp_nat = Nat::new(Type::Udp);
+        let udp_nat = Nat::new(Type::Udp, None);
         let session = udp_nat.create(
             Ipv4Addr::new(127, 0, 0, 1),
             32,

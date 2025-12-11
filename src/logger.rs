@@ -9,14 +9,7 @@ pub(crate) fn init(cli: &cli::Cli) {
     }
 
     env_logger::Builder::new()
-        .format(|buf, record| {
-            writeln!(
-                buf,
-                "[{:<5}] {}",
-                record.level(),
-                record.args()
-            )
-        })
+        .format(|buf, record| writeln!(buf, "[{:<5}] {}", record.level(), record.args()))
         .filter_module("kungfu", level)
         .init();
 }
