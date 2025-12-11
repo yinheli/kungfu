@@ -407,7 +407,7 @@ impl UdpRelay {
     pub async fn send<F, Fut>(
         &self,
         session: Session,
-        payload: Vec<u8>,
+        payload: &[u8],
         callback: F,
     ) -> anyhow::Result<()>
     where

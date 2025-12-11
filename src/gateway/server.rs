@@ -233,8 +233,10 @@ impl Gateway {
         packet_tx: mpsc::UnboundedSender<Vec<u8>>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
-        let mut payload = v4.payload().to_vec();
-        let packet = MutableUdpPacket::new(&mut payload).unwrap();
+        // Copy payload only once for packet parsing - unavoidable due to MutableUdpPacket requirements
+        let payload = v4.payload();
+        let mut payload_vec = payload.to_vec();
+        let packet = MutableUdpPacket::new(&mut payload_vec).unwrap();
 
         let src = v4.get_source();
         let dst = v4.get_destination();
@@ -279,7 +281,7 @@ impl Gateway {
 
         let session = self.udp_nat.create(src, src_port, dst, dst_port);
 
-        // Extract UDP payload
+        // Extract UDP payload - copy only once when sending to relay
         let udp_payload = packet.payload();
 
         // Handle packet with callback pattern
@@ -329,7 +331,7 @@ impl Gateway {
 
         let _ = self
             .udp_relay
-            .send(session, udp_payload.to_vec(), callback)
+            .send(session, udp_payload, callback)
             .await;
     }
 
@@ -338,8 +340,10 @@ impl Gateway {
         packet_tx: mpsc::UnboundedSender<Vec<u8>>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
-        let mut payload = v4.payload().to_vec();
-        let mut packet = MutableTcpPacket::new(&mut payload).unwrap();
+        // Copy payload only once for packet parsing - unavoidable due to MutableTcpPacket requirements
+        let payload = v4.payload();
+        let mut payload_vec = payload.to_vec();
+        let mut packet = MutableTcpPacket::new(&mut payload_vec).unwrap();
 
         let src = v4.get_source();
         let dst = v4.get_destination();
