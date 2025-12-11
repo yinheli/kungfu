@@ -192,7 +192,9 @@ impl Gateway {
     async fn setup_tcp_relay(&self) {
         let addr = format!("{}:{}", self.network.addr(), self.relay_port);
         let relay = relay_tcp::Relay::new(self.runtime.clone(), addr, self.tcp_nat.clone());
-        relay.serve().await
+        if let Err(e) = relay.serve().await {
+            log::error!("TCP relay server error: {}", e);
+        }
     }
 
     async fn handle_icmp_v4(&self, v4: &mut MutableIpv4Packet<'_>) -> Option<Vec<u8>> {
