@@ -52,13 +52,12 @@ impl DnsHandler {
         }
 
         if query.query_type() == RecordType::PTR {
-            let domain = domain.replace(".in-addr.arpa", "");
-            let ip = domain
+            let domain = domain.trim_end_matches(".in-addr.arpa");
+            let ip: String = domain
                 .split('.')
-                .collect::<Vec<_>>()
-                .into_iter()
                 .rev()
-                .collect::<Vec<_>>()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<&str>>()
                 .join(".");
             if let Ok(addr) = ip.parse::<std::net::IpAddr>()
                 && let Some(v) = self.runtime.dns_table.find_by_ip(&addr)
@@ -121,7 +120,7 @@ impl DnsHandler {
     }
 
     pub(crate) async fn handle_hosts(&self, domain: &str) -> Option<Addr> {
-        let m = self.runtime.hosts.read().match_domain(domain)?;
+        let m = self.runtime.hosts.read().match_domain(domain)?.into_owned();
 
         if let Ok(ip) = IpAddr::from_str(&m) {
             return Some(self.runtime.dns_table.allocate(domain, Some(ip), "host"));
@@ -193,12 +192,9 @@ impl DnsHandler {
         domain: &str,
         records: &dyn LookupObject,
     ) -> Option<Addr> {
-        let records = records
+        for record in records
             .iter()
-            .filter(|v| v.data().is_some() && v.data().unwrap().as_a().is_some())
-            .collect::<Vec<_>>();
-
-        for record in records {
+            .filter(|v| v.data().is_some() && v.data().unwrap().as_a().is_some()) {
             if let Some(data) = record.data() {
                 let ip = match data {
                     RData::A(v) => Some(IpAddr::V4(**v)),

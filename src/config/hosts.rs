@@ -1,6 +1,6 @@
 use anyhow::Error;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-
+use std::borrow::Cow;
 #[derive(Debug, Default)]
 pub struct Hosts(Vec<(String, Vec<glob::Pattern>)>);
 
@@ -39,7 +39,7 @@ impl Hosts {
         Ok(Self(items))
     }
 
-    pub fn match_domain(&self, domain: &str) -> Option<String> {
+    pub fn match_domain(&self, domain: &str) -> Option<Cow<'_, str>> {
         if self.0.is_empty() {
             return None;
         }
@@ -47,7 +47,7 @@ impl Hosts {
         self.0.par_iter().find_map_first(|v| {
             v.1.iter().find_map(|x| {
                 if x.matches(domain) {
-                    return Some(v.0.to_string());
+                    return Some(Cow::Borrowed(v.0.as_str()));
                 }
                 None
             })
@@ -87,26 +87,24 @@ mod tests {
 
         let r = hosts.match_domain("localhost");
         assert!(r.is_some());
-        assert_eq!(r, Some("127.0.0.1".to_string()));
+        assert_eq!(r, Some(Cow::Borrowed("127.0.0.1")));
 
         let r = hosts.match_domain("test-dev.app.com");
         assert!(r.is_some());
-        assert_eq!(r, Some("192.168.8.20".to_string()));
-
+        assert_eq!(r, Some(Cow::Borrowed("192.168.8.20")));
         let r = hosts.match_domain("router");
         assert!(r.is_some());
-        assert_eq!(r, Some("192.168.1.1".to_string()));
+        assert_eq!(r, Some(Cow::Borrowed("192.168.1.1")));
 
         let r = hosts.match_domain("router.com");
         assert!(r.is_some());
-        assert_eq!(r, Some("192.168.1.1".to_string()));
-
+        assert_eq!(r, Some(Cow::Borrowed("192.168.1.1")));
         let r = hosts.match_domain("dev.router.com");
         assert!(r.is_some());
-        assert_eq!(r, Some("192.168.1.1".to_string()));
+        assert_eq!(r, Some(Cow::Borrowed("192.168.1.1")));
 
         let r = hosts.match_domain("test.example.com");
-        assert_eq!(r, Some("192.168.1.2".to_string()));
+        assert_eq!(r, Some(Cow::Borrowed("192.168.1.2")));
 
         let r = hosts.match_domain("google.com");
         assert!(r.is_none());

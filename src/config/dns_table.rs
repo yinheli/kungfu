@@ -70,10 +70,11 @@ impl DnsTable {
         let ip = self.allocate_addr();
         let addr = Arc::new(Addr::new(domain, Some(ip), target, remark));
 
-        self.cache.insert(domain.to_string(), addr.clone());
+        let domain_owned = domain.to_string();
+        self.cache.insert(domain_owned.clone(), addr.clone());
 
         let mut mapping = self.mapping.write();
-        mapping.insert(domain.to_string(), ip);
+        mapping.insert(domain_owned, ip);
 
         (*addr).clone()
     }
@@ -104,11 +105,12 @@ impl DnsTable {
     pub fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Addr {
         let addr = Arc::new(Addr::new(domain, ip, "", remark));
 
-        self.cache.insert(domain.to_string(), addr.clone());
+        let domain_owned = domain.to_string();
+        self.cache.insert(domain_owned.clone(), addr.clone());
 
         if let Some(ip_addr) = ip {
             let mut mapping = self.mapping.write();
-            mapping.insert(domain.to_string(), ip_addr);
+            mapping.insert(domain_owned, ip_addr);
         }
 
         (*addr).clone()

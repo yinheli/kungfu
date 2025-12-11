@@ -48,7 +48,7 @@ impl Rules {
 
         domain_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
-            let matched_value = m.match_domain(domain)?;
+            let matched_value = m.match_domain(domain)?.into_owned();
 
             Some(MatchedRule {
                 target: target.clone(),
@@ -68,7 +68,7 @@ impl Rules {
 
         cidr_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
-            let matched_value = m.match_cidr(ip)?;
+            let matched_value = m.match_cidr(ip)?.into_owned();
 
             Some(MatchedRule {
                 target: target.clone(),
@@ -88,7 +88,7 @@ impl Rules {
 
         route_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
-            let matched_value = m.match_cidr(ip)?;
+            let matched_value = m.match_cidr(ip)?.into_owned();
 
             Some(MatchedRule {
                 target: target.clone(),

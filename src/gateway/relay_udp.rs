@@ -427,7 +427,7 @@ impl UdpRelay {
             .get_or_create_association(&proxy_name, &target_host, nat_port, callback)
             .await?;
 
-        let encoded = encode_socks5_udp(&target_host, target_port, &payload)?;
+        let encoded = encode_socks5_udp(&target_host, target_port, payload)?;
 
         let _ = assoc.send(&encoded).await?;
 
