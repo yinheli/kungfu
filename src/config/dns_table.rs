@@ -9,11 +9,12 @@ use hickory_server::{
 };
 use ipnet::IpNet;
 use moka::sync::Cache;
+use parking_lot::{Mutex, RwLock};
 use std::{
     fmt::{Display, Formatter},
     net::IpAddr,
     str::FromStr,
-    sync::{Arc, Mutex, RwLock},
+    sync::Arc,
     time::Duration,
 };
 
@@ -69,10 +70,11 @@ impl DnsTable {
         let ip = self.allocate_addr();
         let addr = Arc::new(Addr::new(domain, Some(ip), target, remark));
 
-        self.cache.insert(domain.to_string(), addr.clone());
+        let domain_owned = domain.to_string();
+        self.cache.insert(domain_owned.clone(), addr.clone());
 
-        let mut mapping = self.mapping.write().unwrap();
-        mapping.insert(domain.to_string(), ip);
+        let mut mapping = self.mapping.write();
+        mapping.insert(domain_owned, ip);
 
         (*addr).clone()
     }
@@ -92,7 +94,7 @@ impl DnsTable {
             return Some(Some((*addr).clone()));
         }
 
-        let mapping = self.mapping.read().unwrap();
+        let mapping = self.mapping.read();
         if mapping.contains_left(domain) {
             Some(None)
         } else {
@@ -103,11 +105,12 @@ impl DnsTable {
     pub fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Addr {
         let addr = Arc::new(Addr::new(domain, ip, "", remark));
 
-        self.cache.insert(domain.to_string(), addr.clone());
+        let domain_owned = domain.to_string();
+        self.cache.insert(domain_owned.clone(), addr.clone());
 
         if let Some(ip_addr) = ip {
-            let mut mapping = self.mapping.write().unwrap();
-            mapping.insert(domain.to_string(), ip_addr);
+            let mut mapping = self.mapping.write();
+            mapping.insert(domain_owned, ip_addr);
         }
 
         (*addr).clone()
@@ -116,12 +119,12 @@ impl DnsTable {
     pub fn clear(&self) {
         self.cache.invalidate_all();
 
-        let mut mapping = self.mapping.write().unwrap();
+        let mut mapping = self.mapping.write();
         mapping.clear();
     }
 
     fn allocate_addr(&self) -> IpAddr {
-        let mut offset = self.offset.lock().unwrap();
+        let mut offset = self.offset.lock();
         loop {
             let n = *offset % self.pool_size;
             *offset += 1;
@@ -154,7 +157,7 @@ impl DnsTable {
         let mapping_clone = mapping.clone();
 
         let eviction_listener = move |domain: Arc<String>, _addr: Arc<Addr>, _cause| {
-            let mut mapping_guard = mapping_clone.write().unwrap();
+            let mut mapping_guard = mapping_clone.write();
             if let Some((_removed_domain, _removed_ip)) = mapping_guard.remove_by_left(&*domain) {}
         };
 
@@ -166,7 +169,7 @@ impl DnsTable {
     }
 
     fn get_domain_by_ip_fast(&self, ip: &IpAddr) -> Option<String> {
-        let mapping = self.mapping.read().unwrap();
+        let mapping = self.mapping.read();
         mapping.get_by_right(ip).cloned()
     }
 }

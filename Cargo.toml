@@ -1,6 +1,6 @@
 [package]
 name = "kungfu"
-version = "0.1.28"
+version = "0.2.0"
 edition = "2024"
 authors = ["yinheli <me@yinheli.com>"]
 keywords = ["dns", "proxy", "hijacking", "transparent-proxy"]
@@ -20,7 +20,6 @@ anyhow = { version="1", default-features = false }
 async-trait = "0.1"
 bimap = "0.6"
 bytes = "1"
-chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 fast-socks5 = "0.10"
@@ -37,6 +36,7 @@ moka = { version = "0.12", features = ["sync"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 num_cpus = "1"
+parking_lot = "0.12"
 pnet = "0.35"
 prometheus = { version = "0.14", features = ["process"] }
 rand = "0.9"
@@ -45,7 +45,6 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9.34"
 tokio = { version = "1", features = ["full"] }
-tokio-io-timeout = "1"
 tun = { version = "0.8", features = ["async"] }
 url = "2"
 

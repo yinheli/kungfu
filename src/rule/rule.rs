@@ -1,7 +1,8 @@
 use anyhow::Error;
+use parking_lot::RwLock;
 use rayon::prelude::*;
 use std::net::IpAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use super::{MatchedRule, RuleConfig, RuleMatcher, RuleType};
 
@@ -26,7 +27,7 @@ impl Rules {
 
     /// Check if domain should be excluded from proxying
     pub fn find_exclude_domain(&self, domain: &str) -> bool {
-        let matchers = self.matchers.read().unwrap();
+        let matchers = self.matchers.read();
         let exclude_matchers = matchers
             .iter()
             .filter(|m| m.rule_type == RuleType::ExcludeDomain)
@@ -39,7 +40,7 @@ impl Rules {
 
     /// Find domain-based rule match
     pub fn find_domain_rule(&self, domain: &str) -> Option<MatchedRule> {
-        let matchers = self.matchers.read().unwrap();
+        let matchers = self.matchers.read();
         let domain_matchers = matchers
             .iter()
             .filter(|m| m.rule_type == RuleType::Domain)
@@ -47,7 +48,7 @@ impl Rules {
 
         domain_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
-            let matched_value = m.match_domain(domain)?;
+            let matched_value = m.match_domain(domain)?.into_owned();
 
             Some(MatchedRule {
                 target: target.clone(),
@@ -59,7 +60,7 @@ impl Rules {
 
     /// Find DNS CIDR-based rule match
     pub fn find_dns_cidr_rule(&self, ip: &IpAddr) -> Option<MatchedRule> {
-        let matchers = self.matchers.read().unwrap();
+        let matchers = self.matchers.read();
         let cidr_matchers = matchers
             .iter()
             .filter(|m| m.rule_type == RuleType::DnsCidr)
@@ -67,7 +68,7 @@ impl Rules {
 
         cidr_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
-            let matched_value = m.match_cidr(ip)?;
+            let matched_value = m.match_cidr(ip)?.into_owned();
 
             Some(MatchedRule {
                 target: target.clone(),
@@ -79,7 +80,7 @@ impl Rules {
 
     /// Find route-based rule match
     pub fn find_route_rule(&self, ip: &IpAddr) -> Option<MatchedRule> {
-        let matchers = self.matchers.read().unwrap();
+        let matchers = self.matchers.read();
         let route_matchers = matchers
             .iter()
             .filter(|m| m.rule_type == RuleType::Route)
@@ -87,7 +88,7 @@ impl Rules {
 
         route_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
-            let matched_value = m.match_cidr(ip)?;
+            let matched_value = m.match_cidr(ip)?.into_owned();
 
             Some(MatchedRule {
                 target: target.clone(),
@@ -99,7 +100,7 @@ impl Rules {
 
     /// Get all route rule CIDR values (for gateway setup)
     pub fn get_route_rules(&self) -> Vec<String> {
-        let matchers = self.matchers.read().unwrap();
+        let matchers = self.matchers.read();
         matchers
             .iter()
             .filter(|m| m.rule_type == RuleType::Route)
@@ -115,7 +116,7 @@ impl Rules {
             new_matchers.push(Arc::new(matcher));
         }
 
-        let mut matchers = self.matchers.write().unwrap();
+        let mut matchers = self.matchers.write();
         *matchers = new_matchers;
 
         Ok(())

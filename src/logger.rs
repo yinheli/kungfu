@@ -1,5 +1,4 @@
 use crate::cli;
-use chrono::Local;
 use std::io::Write;
 
 pub(crate) fn init(cli: &cli::Cli) {
@@ -10,16 +9,7 @@ pub(crate) fn init(cli: &cli::Cli) {
     }
 
     env_logger::Builder::new()
-        .format(|buf, record| {
-            writeln!(
-                buf,
-                "{} [{:<5}] {}",
-                Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                record.level(),
-                record.args()
-            )
-        })
-        // .filter_level(level)
+        .format(|buf, record| writeln!(buf, "[{:<5}] {}", record.level(), record.args()))
         .filter_module("kungfu", level)
         .init();
 }

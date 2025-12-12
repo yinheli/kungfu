@@ -31,6 +31,12 @@ cargo build --release
 # Run tests (includes benchmarks)
 cargo test --benches -- --nocapture
 
+# Run only tests (no benchmarks)
+cargo test
+
+# Run only benchmarks
+cargo test --benches
+
 # Test configuration files without starting services
 cargo run -- --config config/config.yaml --test
 
@@ -73,6 +79,7 @@ src/
 ├── cli.rs            # Command-line argument parsing
 ├── logger.rs         # Logging initialization
 ├── metrics.rs        # Prometheus metrics HTTP server
+├── runtime.rs        # Runtime configuration management
 ├── config/           # Configuration management
 │   ├── mod.rs
 │   ├── setting.rs    # Core config structures (Setting, Proxy, Rule)
@@ -84,12 +91,18 @@ src/
 │   ├── server.rs     # Main DNS server entry point
 │   ├── dns_server.rs # hickory-server based DNS protocol handler
 │   └── dns_handler.rs # Custom DNS query handler with rule matching
-└── gateway/          # Transparent proxy gateway
+├── gateway/          # Transparent proxy gateway
+│   ├── mod.rs
+│   ├── server.rs     # TUN device setup and packet handling
+│   ├── nat.rs        # NAT table for connection tracking
+│   ├── proxy.rs      # SOCKS5 proxy connection management
+│   └── relay_tcp.rs  # TCP relay between TUN and proxy
+└── rule/             # Rule matching logic
     ├── mod.rs
-    ├── server.rs     # TUN device setup and packet handling
-    ├── nat.rs        # NAT table for connection tracking
-    ├── proxy.rs      # SOCKS5 proxy connection management
-    └── relay_tcp.rs  # TCP relay between TUN and proxy
+    ├── config.rs     # Rule configuration structures
+    ├── rule.rs       # Rule implementation
+    ├── matcher.rs    # Pattern matching engine
+    └── type.rs       # Rule type definitions
 ```
 
 ### Core Architecture Patterns
