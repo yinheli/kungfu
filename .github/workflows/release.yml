@@ -102,7 +102,7 @@ jobs:
           tar czvf ../../../${{ matrix.name }} kungfu config README.md
           cd -
       - name: Deploy | Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}
@@ -113,20 +113,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
+        with:
+          pattern: kungfu-*.tar.gz
 
       - name: Display structure of downloaded files
         run: ls -R
 
       - name: Setup | Checksums
-        run: for file in kungfu-*/kungfu-*; do openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256"; done
+        run: |
+          for file in kungfu-*/kungfu-*.tar.gz; do
+            if [ -f "$file" ]; then
+              openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256"
+            fi
+          done
 
       - name: Build | Add Artifacts to Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: kungfu-*/kungfu-*
+          files: |
+            kungfu-*/kungfu-*.tar.gz
+            kungfu-*/kungfu-*.tar.gz.sha256
 
   publish_crates:
     name: Publish Crates
