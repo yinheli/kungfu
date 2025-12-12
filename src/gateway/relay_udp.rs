@@ -1,16 +1,18 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Result, anyhow};
 use bytes::{BufMut, BytesMut};
 use log::debug;
 use moka::sync::Cache;
-
-use std::net::{IpAddr, Ipv4Addr};
-use tokio::sync::Mutex;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
-    sync::mpsc::Receiver,
+    sync::{Mutex, mpsc::Receiver},
     time::timeout,
 };
 use url::Url;
@@ -20,7 +22,7 @@ use crate::{gateway::stats, runtime::ArcRuntime};
 
 const UDP_BUFFER_SIZE: usize = 1500;
 const UDP_ASSOCIATE_TIMEOUT: Duration = Duration::from_secs(5);
-const UDP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+const UDP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKS5_UDP_HEADER_MIN: usize = 10; // RSV(2) + FRAG(1) + ATYP(1) + LEN(1) + PORT(2)
 
 /// SOCKS5 reply descriptions indexed by reply code
@@ -347,7 +349,7 @@ impl UdpRelay {
             let mut pending = self.lock.lock().await;
             pending
                 .entry(nat_port)
-                .or_insert(Arc::new(Default::default()))
+                .or_insert_with(|| Arc::new(Mutex::new(None)))
                 .clone()
         };
 
@@ -415,7 +417,7 @@ impl UdpRelay {
         Fut: std::future::Future<Output = ()> + Send,
     {
         let nat_port = session.nat_port;
-        let target = self.find_target(session)?;
+        let target = self.find_target(session).await?;
         let (proxy_name, target_host, target_port) = target;
         let max_payload = UDP_BUFFER_SIZE - (SOCKS5_UDP_HEADER_MIN + target_host.len());
         if payload.len() > max_payload {
@@ -443,8 +445,9 @@ impl UdpRelay {
         Ok(())
     }
 
-    fn find_target(&self, session: Session) -> anyhow::Result<(String, String, u16)> {
+    async fn find_target(&self, session: Session) -> anyhow::Result<(String, String, u16)> {
         common::find_target(self.runtime.clone(), session)
+            .await
             .ok_or_else(|| anyhow!("No route found for {}", session.dst_addr))
     }
 }

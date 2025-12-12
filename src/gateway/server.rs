@@ -279,7 +279,7 @@ impl Gateway {
             let _ = packet_tx.send(p.packet().to_vec());
         }
 
-        let session = self.udp_nat.create(src, src_port, dst, dst_port);
+        let session = self.udp_nat.create(src, src_port, dst, dst_port).await;
 
         // Extract UDP payload - copy only once when sending to relay
         let udp_payload = packet.payload();
@@ -350,7 +350,7 @@ impl Gateway {
         let nat = self.tcp_nat.clone();
 
         if src_port == self.relay_port && self.network.addr() == src {
-            let session = nat.find(dst_port);
+            let session = nat.find(dst_port).await;
             match session {
                 None => {
                     return;
@@ -364,7 +364,7 @@ impl Gateway {
                 }
             }
         } else {
-            let session = nat.create(src, src_port, dst, dst_port);
+            let session = nat.create(src, src_port, dst, dst_port).await;
 
             packet.set_source(session.nat_port);
             packet.set_destination(self.relay_port);

@@ -1,4 +1,4 @@
-use parking_lot::RwLock;
+use arc_swap::ArcSwap;
 use std::sync::Arc;
 
 use crate::config::{DnsTable, Hosts, setting::Setting};
@@ -8,7 +8,7 @@ use crate::rule::Rules;
 pub struct RuntimeContext {
     pub setting: Arc<Setting>,
     pub rules: Arc<Rules>,
-    pub hosts: RwLock<Hosts>,
+    pub hosts: ArcSwap<Hosts>,
     pub dns_table: DnsTable,
 }
 

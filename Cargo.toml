@@ -17,6 +17,7 @@ homepage = "https://github.com/yinheli/kungfu"
 
 [dependencies]
 anyhow = { version="1", default-features = false }
+arc-swap = "1"
 async-trait = "0.1"
 bimap = "0.6"
 bytes = "1"
@@ -32,7 +33,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 ipnet = "2"
 lazy_static = "1"
 log = "0.4"
-moka = { version = "0.12", features = ["sync"] }
+moka = { version = "0.12", features = ["sync", "future"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 num_cpus = "1"
@@ -41,7 +42,6 @@ pnet = "0.35"
 prometheus = { version = "0.14", features = ["process"] }
 rand = "0.9"
 rayon = "1"
-regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9.34"
 tokio = { version = "1", features = ["full"] }

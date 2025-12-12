@@ -1,6 +1,5 @@
 use anyhow::Error;
 use ipnet::IpNet;
-use rayon::prelude::*;
 use std::borrow::Cow;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -69,15 +68,19 @@ impl RuleMatcher {
         }
     }
 
-    /// Match domain against glob patterns (parallel search)
+    /// Match domain against glob patterns (sequential search)
     pub fn match_domain(&self, domain: &str) -> Option<Cow<'_, str>> {
-        let pattern = self.patterns.par_iter().find_any(|&v| v.matches(domain));
-        pattern.map(|p| Cow::Owned(p.as_str().to_string()))
+        self.patterns
+            .iter()
+            .find(|&v| v.matches(domain))
+            .map(|p| Cow::Owned(p.as_str().to_string()))
     }
 
-    /// Match IP address against CIDR ranges (parallel search)
+    /// Match IP address against CIDR ranges (sequential search)
     pub fn match_cidr(&self, ip: &IpAddr) -> Option<Cow<'_, str>> {
-        let cidr = self.cidrs.par_iter().find_any(|&v| v.contains(ip));
-        cidr.map(|cidr| Cow::Owned(cidr.to_string()))
+        self.cidrs
+            .iter()
+            .find(|&v| v.contains(ip))
+            .map(|cidr| Cow::Owned(cidr.to_string()))
     }
 }

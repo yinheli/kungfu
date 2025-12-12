@@ -96,7 +96,7 @@ impl DnsHandler {
 
         if query.query_type() == RecordType::PTR
             && let Some(addr) = self.parse_ptr_domain(domain)
-            && let Some(v) = self.runtime.dns_table.find_by_ip(&addr)
+            && let Some(v) = self.runtime.dns_table.find_by_ip(&addr).await
         {
             let mut records = RecordSet::with_ttl(query.name().into(), RecordType::PTR, 10);
             let ptr = format!("{}.{}", domain, v.domain);
@@ -111,7 +111,7 @@ impl DnsHandler {
         let mut matching_rules = false;
 
         if should_handle {
-            let addr = self.runtime.dns_table.find_by_domain(domain);
+            let addr = self.runtime.dns_table.find_by_domain(domain).await;
             match addr {
                 Some(Some(v)) => {
                     return Ok(Box::new(v));
@@ -121,12 +121,11 @@ impl DnsHandler {
 
                     matching_rules = true;
 
-                    let result = self
-                        .handle_hosts(domain)
-                        .await
-                        .or_else(|| self.apply_before_rules(domain));
+                    if let Some(v) = self.handle_hosts(domain).await {
+                        return Ok(Box::new(v));
+                    }
 
-                    if let Some(v) = result {
+                    if let Some(v) = self.apply_before_rules(domain).await {
                         return Ok(Box::new(v));
                     }
                 }
@@ -150,7 +149,15 @@ impl DnsHandler {
         if should_handle && matching_rules {
             match result {
                 Ok(r) => {
-                    if let Some(v) = self.apply_post_rules(domain, r.as_ref()) {
+                    let ips: Vec<IpAddr> = r
+                        .iter()
+                        .filter_map(|record| match record.data() {
+                            RData::A(v) => Some(IpAddr::V4(**v)),
+                            _ => None,
+                        })
+                        .collect();
+
+                    if let Some(v) = self.apply_post_rules(domain, ips).await {
                         return Ok(Box::new(v));
                     }
 
@@ -163,10 +170,15 @@ impl DnsHandler {
     }
 
     pub(crate) async fn handle_hosts(&self, domain: &str) -> Option<Addr> {
-        let m = self.runtime.hosts.read().match_domain(domain)?.into_owned();
+        let m = self.runtime.hosts.load().match_domain(domain)?;
 
         if let Ok(ip) = IpAddr::from_str(&m) {
-            return Some(self.runtime.dns_table.allocate(domain, Some(ip), "host"));
+            return Some(
+                self.runtime
+                    .dns_table
+                    .allocate(domain, Some(ip), "host")
+                    .await,
+            );
         }
 
         let name = Name::from_str(&m);
@@ -189,11 +201,12 @@ impl DnsHandler {
                 for record in v.iter() {
                     let data = record.data();
                     if let Some(a_record) = data.as_a() {
-                        return Some(self.runtime.dns_table.allocate(
-                            domain,
-                            Some(IpAddr::V4(**a_record)),
-                            "host",
-                        ));
+                        return Some(
+                            self.runtime
+                                .dns_table
+                                .allocate(domain, Some(IpAddr::V4(**a_record)), "host")
+                                .await,
+                        );
                     }
                 }
                 None
@@ -206,11 +219,12 @@ impl DnsHandler {
                 for record in v.iter() {
                     let data = record.data();
                     if let Some(a_record) = data.as_a() {
-                        return Some(self.runtime.dns_table.allocate(
-                            domain,
-                            Some(IpAddr::V4(**a_record)),
-                            "host",
-                        ));
+                        return Some(
+                            self.runtime
+                                .dns_table
+                                .allocate(domain, Some(IpAddr::V4(**a_record)), "host")
+                                .await,
+                        );
                     }
                 }
                 None
@@ -223,7 +237,7 @@ impl DnsHandler {
         }
     }
 
-    pub(crate) fn apply_before_rules(&self, domain: &str) -> Option<Addr> {
+    pub(crate) async fn apply_before_rules(&self, domain: &str) -> Option<Addr> {
         // Check exclude rules first
         if self.runtime.rules.find_exclude_domain(domain) {
             return None;
@@ -239,7 +253,8 @@ impl DnsHandler {
             let addr = self
                 .runtime
                 .dns_table
-                .apply(domain, &matched.target, &remark);
+                .apply(domain, &matched.target, &remark)
+                .await;
 
             return Some(addr);
         }
@@ -247,20 +262,9 @@ impl DnsHandler {
         None
     }
 
-    pub(crate) fn apply_post_rules(
-        &self,
-        domain: &str,
-        records: &dyn LookupObject,
-    ) -> Option<Addr> {
-        for record in records.iter() {
-            let ip = match record.data() {
-                RData::A(v) => Some(IpAddr::V4(**v)),
-                _ => None,
-            };
-
-            if let Some(ip) = ip
-                && let Some(matched) = self.runtime.rules.find_dns_cidr_rule(&ip)
-            {
+    pub(crate) async fn apply_post_rules(&self, domain: &str, ips: Vec<IpAddr>) -> Option<Addr> {
+        for ip in ips {
+            if let Some(matched) = self.runtime.rules.find_dns_cidr_rule(&ip) {
                 let remark = format!(
                     "rule:{:?}, value:{}, target:{}",
                     matched.rule_type, matched.matched_value, matched.target
@@ -268,7 +272,8 @@ impl DnsHandler {
                 let addr = self
                     .runtime
                     .dns_table
-                    .apply(domain, &matched.target, &remark);
+                    .apply(domain, &matched.target, &remark)
+                    .await;
 
                 return Some(addr);
             }
