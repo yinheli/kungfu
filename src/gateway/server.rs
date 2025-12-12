@@ -329,10 +329,7 @@ impl Gateway {
             }
         };
 
-        let _ = self
-            .udp_relay
-            .send(session, udp_payload, callback)
-            .await;
+        let _ = self.udp_relay.send(session, udp_payload, callback).await;
     }
 
     async fn handle_tcp_v4(

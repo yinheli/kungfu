@@ -38,7 +38,8 @@ pub struct Addr {
     records: Vec<Record>,
 }
 
-const DNS_CACHE_SIZE: u64 = 2000;
+const DNS_CACHE_SIZE: u64 = 1000;
+const DNS_CACHE_TTL: Duration = Duration::from_mins(5);
 
 impl Default for DnsTable {
     fn default() -> Self {
@@ -48,13 +49,33 @@ impl Default for DnsTable {
 
 impl DnsTable {
     pub fn new(network: &str) -> Self {
+        Self::new_with_ttl(network, DNS_CACHE_TTL)
+    }
+
+    #[cfg(test)]
+    pub fn new_with_short_ttl(network: &str) -> Self {
+        Self::new_with_ttl(network, Duration::from_secs(1))
+    }
+
+    fn new_with_ttl(network: &str, ttl: Duration) -> Self {
         let network = IpNet::from_str(network).unwrap();
 
         let hosts = network.hosts();
         let pool_size = hosts.count();
 
-        let mapping: Arc<RwLock<BiMap<String, IpAddr>>> = Default::default();
-        let cache = DnsTable::new_cache(mapping.clone());
+        let mapping = Arc::new(RwLock::new(BiMap::new()));
+        let mapping_for_listener = Arc::clone(&mapping);
+
+        let eviction_listener = move |domain: Arc<String>, _addr: Arc<Addr>, _cause| {
+            let mut mapping_guard = mapping_for_listener.write();
+            mapping_guard.remove_by_left(&*domain);
+        };
+
+        let cache = Cache::builder()
+            .max_capacity(DNS_CACHE_SIZE)
+            .time_to_idle(ttl)
+            .eviction_listener(eviction_listener)
+            .build();
 
         Self {
             cache,
@@ -80,12 +101,12 @@ impl DnsTable {
     }
 
     pub fn find_by_ip(&self, ip: &IpAddr) -> Option<Addr> {
-        if let Some(domain) = self.get_domain_by_ip_fast(ip)
-            && let Some(addr) = self.cache.get(&domain)
+        let mapping = self.mapping.read();
+        if let Some(domain) = mapping.get_by_right(ip)
+            && let Some(addr) = self.cache.get(domain)
         {
             return Some((*addr).clone());
         }
-
         None
     }
 
@@ -150,27 +171,6 @@ impl DnsTable {
                 IpAddr::V6(target.into())
             }
         }
-    }
-
-    fn new_cache(mapping: Arc<RwLock<BiMap<String, IpAddr>>>) -> Cache<String, Arc<Addr>> {
-        let idle = Duration::from_secs(60 * 10);
-        let mapping_clone = mapping.clone();
-
-        let eviction_listener = move |domain: Arc<String>, _addr: Arc<Addr>, _cause| {
-            let mut mapping_guard = mapping_clone.write();
-            if let Some((_removed_domain, _removed_ip)) = mapping_guard.remove_by_left(&*domain) {}
-        };
-
-        Cache::builder()
-            .max_capacity(DNS_CACHE_SIZE)
-            .time_to_idle(idle)
-            .eviction_listener(eviction_listener)
-            .build()
-    }
-
-    fn get_domain_by_ip_fast(&self, ip: &IpAddr) -> Option<String> {
-        let mapping = self.mapping.read();
-        mapping.get_by_right(ip).cloned()
     }
 }
 
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_cache_mapping_sync_on_eviction() {
-        let table = DnsTable::new("10.89.0.1/24");
+        let table = DnsTable::new_with_short_ttl("10.89.0.1/24");
 
         let domains = ["test1.com", "test2.com", "test3.com"];
         let mut ips = vec![];

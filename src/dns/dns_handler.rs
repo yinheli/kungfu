@@ -1,6 +1,7 @@
 use hickory_server::{
     authority::{
-        AuthLookup, AuthorityObject, LookupError, LookupObject, LookupOptions, LookupRecords,
+        AuthLookup, AuthorityObject, LookupControlFlow, LookupError, LookupObject, LookupOptions,
+        LookupRecords,
     },
     proto::{
         op::ResponseCode,
@@ -11,20 +12,54 @@ use hickory_server::{
 };
 use log::{debug, error};
 use prometheus::{IntCounter, register_int_counter};
-use std::{net::IpAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::time::timeout;
 
 use crate::config::Addr;
 use crate::runtime::ArcRuntime;
 
 pub(crate) struct DnsHandler {
-    upstream: Box<dyn AuthorityObject>,
     runtime: ArcRuntime,
+    upstream: Arc<dyn AuthorityObject>,
 }
 
 impl DnsHandler {
-    pub(crate) fn new(upstream: Box<dyn AuthorityObject>, runtime: ArcRuntime) -> Self {
-        Self { upstream, runtime }
+    pub(crate) fn new(runtime: ArcRuntime, upstream: Arc<dyn AuthorityObject>) -> Self {
+        Self { runtime, upstream }
+    }
+
+    fn parse_ptr_domain(&self, domain: &str) -> Option<IpAddr> {
+        if !domain.ends_with(".in-addr.arpa") {
+            return None;
+        }
+
+        let addr_part = domain.trim_end_matches(".in-addr.arpa");
+        let mut octets = [0u8; 4];
+        let mut octet_index = 0;
+
+        for part in addr_part.split('.').rev() {
+            if part.is_empty() {
+                continue;
+            }
+
+            if octet_index >= 4 {
+                return None;
+            }
+
+            octets[octet_index] = part.parse::<u8>().ok()?;
+            octet_index += 1;
+        }
+
+        if octet_index != 4 {
+            return None;
+        }
+
+        Some(IpAddr::V4(Ipv4Addr::from(octets)))
     }
 
     pub(crate) async fn handle(
@@ -35,8 +70,16 @@ impl DnsHandler {
         let query = request_info.query;
         let should_handle = query.query_type() == RecordType::A;
 
-        let domain = query.name().to_string();
-        let domain = domain.strip_suffix('.').unwrap_or("");
+        let name_str = query.name().to_string();
+        let domain = if let Some(trimmed) = name_str.strip_suffix('.') {
+            if trimmed.is_empty() {
+                &name_str
+            } else {
+                trimmed
+            }
+        } else {
+            &name_str
+        };
 
         if Name::from_str(domain).is_err() {
             return Err(LookupError::ResponseCode(ResponseCode::BADNAME));
@@ -51,20 +94,14 @@ impl DnsHandler {
             DNS_QUERY.inc();
         }
 
-        if query.query_type() == RecordType::PTR {
-            let domain = domain.trim_end_matches(".in-addr.arpa");
-            let ip: String = domain
-                .split('.')
-                .rev()
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<&str>>()
-                .join(".");
-            if let Ok(addr) = ip.parse::<std::net::IpAddr>()
-                && let Some(v) = self.runtime.dns_table.find_by_ip(&addr)
-            {
-                let mut records = RecordSet::with_ttl(query.name().into(), RecordType::PTR, 10);
-                let ptr = format!("{}.{}", domain, v.domain);
-                records.add_rdata(RData::PTR(PTR(Name::from_str(&ptr).unwrap())));
+        if query.query_type() == RecordType::PTR
+            && let Some(addr) = self.parse_ptr_domain(domain)
+            && let Some(v) = self.runtime.dns_table.find_by_ip(&addr)
+        {
+            let mut records = RecordSet::with_ttl(query.name().into(), RecordType::PTR, 10);
+            let ptr = format!("{}.{}", domain, v.domain);
+            if let Ok(name) = Name::from_str(&ptr) {
+                records.add_rdata(RData::PTR(PTR(name)));
                 let answers = LookupRecords::new(Default::default(), Arc::new(records));
                 let result = AuthLookup::answers(answers, None);
                 return Ok(Box::new(result));
@@ -97,12 +134,18 @@ impl DnsHandler {
             }
         }
 
-        let result = timeout(
+        let search_result = timeout(
             Duration::from_secs(2),
             self.upstream.search(request_info, lookup_options),
         )
         .await
         .map_err(|_| LookupError::ResponseCode(ResponseCode::ServFail))?;
+
+        let result = match search_result {
+            LookupControlFlow::Continue(lookup) => lookup,
+            LookupControlFlow::Break(lookup) => lookup,
+            LookupControlFlow::Skip => Err(LookupError::ResponseCode(ResponseCode::ServFail)),
+        };
 
         if should_handle && matching_rules {
             match result {
@@ -142,24 +185,41 @@ impl DnsHandler {
             .await;
 
         match r {
-            Ok(v) => {
-                for v in v.iter() {
-                    if let Some(v) = v.data()
-                        && let Some(v) = v.as_a()
-                    {
+            LookupControlFlow::Continue(Ok(v)) => {
+                for record in v.iter() {
+                    let data = record.data();
+                    if let Some(a_record) = data.as_a() {
                         return Some(self.runtime.dns_table.allocate(
                             domain,
-                            Some(IpAddr::V4(**v)),
+                            Some(IpAddr::V4(**a_record)),
                             "host",
                         ));
                     }
                 }
                 None
             }
-            Err(e) => {
+            LookupControlFlow::Continue(Err(e)) => {
                 error!("{:?}", e);
                 None
             }
+            LookupControlFlow::Break(Ok(v)) => {
+                for record in v.iter() {
+                    let data = record.data();
+                    if let Some(a_record) = data.as_a() {
+                        return Some(self.runtime.dns_table.allocate(
+                            domain,
+                            Some(IpAddr::V4(**a_record)),
+                            "host",
+                        ));
+                    }
+                }
+                None
+            }
+            LookupControlFlow::Break(Err(e)) => {
+                error!("{:?}", e);
+                None
+            }
+            LookupControlFlow::Skip => None,
         }
     }
 
@@ -192,29 +252,25 @@ impl DnsHandler {
         domain: &str,
         records: &dyn LookupObject,
     ) -> Option<Addr> {
-        for record in records
-            .iter()
-            .filter(|v| v.data().is_some() && v.data().unwrap().as_a().is_some()) {
-            if let Some(data) = record.data() {
-                let ip = match data {
-                    RData::A(v) => Some(IpAddr::V4(**v)),
-                    _ => None,
-                };
+        for record in records.iter() {
+            let ip = match record.data() {
+                RData::A(v) => Some(IpAddr::V4(**v)),
+                _ => None,
+            };
 
-                if let Some(ip) = ip
-                    && let Some(matched) = self.runtime.rules.find_dns_cidr_rule(&ip)
-                {
-                    let remark = format!(
-                        "rule:{:?}, value:{}, target:{}",
-                        matched.rule_type, matched.matched_value, matched.target
-                    );
-                    let addr = self
-                        .runtime
-                        .dns_table
-                        .apply(domain, &matched.target, &remark);
+            if let Some(ip) = ip
+                && let Some(matched) = self.runtime.rules.find_dns_cidr_rule(&ip)
+            {
+                let remark = format!(
+                    "rule:{:?}, value:{}, target:{}",
+                    matched.rule_type, matched.matched_value, matched.target
+                );
+                let addr = self
+                    .runtime
+                    .dns_table
+                    .apply(domain, &matched.target, &remark);
 
-                    return Some(addr);
-                }
+                return Some(addr);
             }
         }
 
