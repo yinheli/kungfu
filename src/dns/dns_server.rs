@@ -3,13 +3,13 @@ use hickory_server::proto::rr::LowerName;
 use hickory_server::{
     ServerFuture,
     authority::{
-        AuthorityObject, Catalog, LookupError, LookupObject, LookupOptions, MessageRequest,
-        UpdateResult, ZoneType,
+        AuthorityObject, Catalog, LookupControlFlow, LookupError, LookupObject, LookupOptions,
+        MessageRequest, UpdateResult, ZoneType,
     },
     proto::{op::ResponseCode, rr::RecordType},
     resolver::{
         Name,
-        config::{NameServerConfigGroup, ResolverOpts},
+        config::{NameServerConfigGroup, ResolveHosts, ResolverOpts},
     },
     server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo},
     store::forwarder::{ForwardAuthority, ForwardConfig},
@@ -45,7 +45,7 @@ pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<ServerFuture
     let mut opts = ResolverOpts::default();
     opts.attempts = 1;
     opts.check_names = false;
-    opts.use_hosts_file = true;
+    opts.use_hosts_file = ResolveHosts::Never;
     opts.validate = false;
     opts.num_concurrent_reqs = 2;
     opts.try_tcp_on_error = false;
@@ -59,16 +59,16 @@ pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<ServerFuture
         options: Some(opts),
     };
 
-    let upstream =
-        ForwardAuthority::try_from_config(Name::root(), ZoneType::Forward, &forward_config)
-            .unwrap();
+    let upstream = ForwardAuthority::builder_tokio(forward_config)
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build forward authority: {}", e))?;
 
     let upstream = Arc::new(upstream);
-    let handler = DnsHandler::new(Box::new(upstream.clone()), runtime.clone());
-    let authority = HijackAuthority::new(Box::new(upstream.clone()), handler);
+    let handler = DnsHandler::new(runtime.clone(), upstream.clone());
+    let authority = HijackAuthority::new(upstream.clone(), handler);
 
     let mut catalog = Catalog::new();
-    catalog.upsert(LowerName::from(Name::root()), Box::new(authority));
+    catalog.upsert(LowerName::from(Name::root()), vec![Arc::new(authority)]);
 
     let mut server = ServerFuture::new(Handler { catalog });
     log::info!("dns listen port: {}", runtime.setting.dns_port);
@@ -92,22 +92,18 @@ pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<ServerFuture
 }
 
 struct HijackAuthority {
-    upstream: Box<dyn AuthorityObject>,
+    upstream: Arc<dyn AuthorityObject>,
     handler: DnsHandler,
 }
 
 impl HijackAuthority {
-    fn new(upstream: Box<dyn AuthorityObject>, handler: DnsHandler) -> Self {
+    fn new(upstream: Arc<dyn AuthorityObject>, handler: DnsHandler) -> Self {
         Self { upstream, handler }
     }
 }
 
 #[async_trait::async_trait]
 impl AuthorityObject for HijackAuthority {
-    fn box_clone(&self) -> Box<dyn AuthorityObject> {
-        self.upstream.box_clone()
-    }
-
     fn zone_type(&self) -> ZoneType {
         self.upstream.zone_type()
     }
@@ -116,12 +112,16 @@ impl AuthorityObject for HijackAuthority {
         self.upstream.is_axfr_allowed()
     }
 
-    async fn update(&self, update: &MessageRequest) -> UpdateResult<bool> {
-        self.upstream.update(update).await
+    fn can_validate_dnssec(&self) -> bool {
+        self.upstream.can_validate_dnssec()
     }
 
     fn origin(&self) -> &LowerName {
         self.upstream.origin()
+    }
+
+    async fn update(&self, update: &MessageRequest) -> UpdateResult<bool> {
+        self.upstream.update(update).await
     }
 
     async fn lookup(
@@ -129,7 +129,7 @@ impl AuthorityObject for HijackAuthority {
         name: &LowerName,
         rtype: RecordType,
         lookup_options: LookupOptions,
-    ) -> Result<Box<dyn LookupObject>, LookupError> {
+    ) -> LookupControlFlow<Box<dyn LookupObject>> {
         self.upstream.lookup(name, rtype, lookup_options).await
     }
 
@@ -137,13 +137,15 @@ impl AuthorityObject for HijackAuthority {
         &self,
         request_info: RequestInfo<'_>,
         lookup_options: LookupOptions,
-    ) -> Result<Box<dyn LookupObject>, LookupError> {
+    ) -> LookupControlFlow<Box<dyn LookupObject>> {
         let future = self.handler.handle(request_info, lookup_options);
-        // let future = self.upstream.search(request_info, lookup_options);
 
         match time::timeout(Duration::from_millis(2000), future).await {
-            Ok(r) => r,
-            Err(_) => Err(LookupError::ResponseCode(ResponseCode::ServFail)),
+            Ok(Ok(r)) => LookupControlFlow::Continue(Ok(r)),
+            Ok(Err(e)) => LookupControlFlow::Break(Err(e)),
+            Err(_) => {
+                LookupControlFlow::Break(Err(LookupError::ResponseCode(ResponseCode::ServFail)))
+            }
         }
     }
 
@@ -151,8 +153,20 @@ impl AuthorityObject for HijackAuthority {
         &self,
         name: &LowerName,
         lookup_options: LookupOptions,
-    ) -> Result<Box<dyn LookupObject>, LookupError> {
+    ) -> LookupControlFlow<Box<dyn LookupObject>> {
         self.upstream.get_nsec_records(name, lookup_options).await
+    }
+
+    async fn consult(
+        &self,
+        name: &LowerName,
+        rtype: RecordType,
+        lookup_options: LookupOptions,
+        lookup: LookupControlFlow<Box<dyn LookupObject>>,
+    ) -> LookupControlFlow<Box<dyn LookupObject>> {
+        self.upstream
+            .consult(name, rtype, lookup_options, lookup)
+            .await
     }
 }
 

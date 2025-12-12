@@ -6,18 +6,20 @@ use crate::{cli::Cli, config::DnsTable};
 use anyhow::{Error, bail};
 use ipnet::IpNet;
 use log::{debug, error, info};
-use notify::RecursiveMode;
-use notify_debouncer_mini::Debouncer;
-use parking_lot::{Mutex, RwLock};
+use notify::{Config as NotifyConfig, RecursiveMode};
+use notify_debouncer_mini::{Config, Debouncer, new_debouncer_opt};
 use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+
+use arc_swap::ArcSwap;
 use std::{fs, path::PathBuf};
 
 // holder notify watchers
-static WATCHERS: Mutex<Vec<Debouncer<notify::RecommendedWatcher>>> = Mutex::new(vec![]);
+static WATCHERS: Mutex<Vec<Debouncer<notify::PollWatcher>>> = Mutex::new(vec![]);
 
 pub fn load(cli: &Cli) -> Result<ArcRuntime, Error> {
     let path = config_path(&cli.config);
@@ -43,7 +45,7 @@ pub fn load(cli: &Cli) -> Result<ArcRuntime, Error> {
     let runtime = Arc::new(RuntimeContext {
         setting: Arc::new(setting),
         rules,
-        hosts: RwLock::new(hosts),
+        hosts: ArcSwap::new(Arc::new(hosts)),
         dns_table,
     });
 
@@ -137,53 +139,71 @@ fn watch(runtime: ArcRuntime, rules_dir: PathBuf) {
 
     let dir = rules_dir.clone();
 
-    let event_handler = move |event: notify_debouncer_mini::DebounceEventResult| {
-        if let Ok(evs) = event {
-            evs.iter().for_each(|v| {
-                if v.path.file_name().eq(&Some(OsStr::new("hosts"))) {
-                    info!("reload hosts: {:?}", v.path);
-                    if let Err(e) = reload_hosts(&runtime, v.path.clone()) {
+    let event_handler = move |event: notify_debouncer_mini::DebounceEventResult| match event {
+        Ok(evs) => {
+            for ev in &evs {
+                debug!("file event: {:?} - {:?}", ev.kind, ev.path);
+
+                if ev.path.file_name().eq(&Some(OsStr::new("hosts"))) {
+                    info!("reload hosts: {:?}", ev.path);
+                    if let Err(e) = reload_hosts(runtime.clone(), ev.path.clone()) {
                         error!("load hosts error: {:?}", e);
                     }
                 }
-            });
 
-            let has_rule_changes = evs.iter().any(|v| {
-                let ext = v.path.extension();
-                if let Some(v) = ext {
-                    return v == "yaml" || v == "yml";
-                }
-                false
-            });
-
-            if has_rule_changes {
-                info!("reload rules");
-                if let Err(e) = reload_rules(&runtime, rules_dir.clone()) {
-                    error!("load rules error: {:?}", e);
+                if let Some(ext) = ev.path.extension()
+                    && (ext == "yaml" || ext == "yml")
+                {
+                    info!("reload rules");
+                    if let Err(e) = reload_rules(runtime.clone(), rules_dir.clone()) {
+                        error!("load rules error: {:?}", e);
+                    }
+                    return;
                 }
             }
         }
+        Err(error) => {
+            error!("watch error: {:?}", error);
+        }
     };
 
-    let timeout = Duration::from_secs(2);
-    let mut deboncer = notify_debouncer_mini::new_debouncer(timeout, event_handler).unwrap();
+    let backend_config = NotifyConfig::default().with_poll_interval(Duration::from_secs(1));
 
-    let w = deboncer.watcher();
-    w.watch(dir.as_path(), RecursiveMode::NonRecursive).unwrap();
-    WATCHERS.lock().push(deboncer);
+    let debouncer_config = Config::default()
+        .with_timeout(Duration::from_millis(1000))
+        .with_notify_config(backend_config);
+
+    let mut debouncer =
+        new_debouncer_opt::<_, notify::PollWatcher>(debouncer_config, event_handler)
+            .expect("Failed to create file watcher");
+
+    debouncer
+        .watcher()
+        .watch(dir.as_path(), RecursiveMode::NonRecursive)
+        .expect("Failed to watch directory");
+
+    WATCHERS.lock().unwrap().push(debouncer);
 }
 
-fn reload_hosts(runtime: &RuntimeContext, host_file: PathBuf) -> Result<(), Error> {
+fn reload_hosts(runtime: ArcRuntime, host_file: PathBuf) -> Result<(), Error> {
     let hosts = load_hosts_file(host_file)?;
-    *runtime.hosts.write() = hosts;
-    runtime.dns_table.clear();
+
+    runtime.hosts.store(Arc::new(hosts));
+    // Use block_in_place to call async clear() from sync context
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(runtime.dns_table.clear())
+    });
     Ok(())
 }
 
-fn reload_rules(runtime: &RuntimeContext, rules_dir: PathBuf) -> Result<(), Error> {
+fn reload_rules(runtime: ArcRuntime, rules_dir: PathBuf) -> Result<(), Error> {
     let configs = load_all_rule_configs(rules_dir)?;
+
     runtime.rules.reload(configs)?;
-    runtime.dns_table.clear();
+    // Use block_in_place to call async clear() from sync context
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(runtime.dns_table.clear())
+    });
     Ok(())
 }
 

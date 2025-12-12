@@ -1,10 +1,13 @@
-use parking_lot::RwLock;
 use std::{
     io::Error,
+    net::SocketAddr,
     pin::Pin,
-    sync::Arc,
-    task::Context,
-    time::{Duration, Instant},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    task::{Context, Poll},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Result};
@@ -24,7 +27,7 @@ use super::{
 };
 
 const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) struct TcpRelay {
     runtime: ArcRuntime,
@@ -66,7 +69,7 @@ impl TcpRelay {
 
 async fn handle_connection(
     stream: TcpStream,
-    remote_addr: std::net::SocketAddr,
+    remote_addr: SocketAddr,
     nat: Arc<Nat>,
     runtime: ArcRuntime,
 ) -> Result<()> {
@@ -116,7 +119,6 @@ async fn copy_with_idle_timeout(
             Ok(())
         }
         Err(e) => {
-            // prevent logging timeout errors as warnings
             debug!("TCP relay error: {}", e);
             Ok(())
         }
@@ -126,33 +128,49 @@ async fn copy_with_idle_timeout(
 async fn find_session_target(
     nat: &Nat,
     runtime: &ArcRuntime,
-    remote_addr: std::net::SocketAddr,
+    remote_addr: SocketAddr,
 ) -> Result<(String, String, u16)> {
     let session = nat
         .find(remote_addr.port())
+        .await
         .ok_or_else(|| anyhow::anyhow!("NAT session not found for {}", remote_addr))?;
 
     common::find_target(runtime.clone(), session)
+        .await
         .ok_or_else(|| anyhow::anyhow!("No target found for session"))
 }
 
 struct SharedIdleTracker {
-    last_activity: Arc<RwLock<Instant>>,
+    last_activity: Arc<AtomicU64>,
 }
 
 impl SharedIdleTracker {
     fn new() -> Self {
+        let now_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
         Self {
-            last_activity: Arc::new(RwLock::new(Instant::now())),
+            last_activity: Arc::new(AtomicU64::new(now_millis)),
         }
     }
 
     fn update_activity(&self) {
-        *self.last_activity.write() = Instant::now();
+        let now_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.last_activity.store(now_millis, Ordering::Relaxed);
     }
 
     fn elapsed(&self) -> Duration {
-        self.last_activity.read().elapsed()
+        let last_millis = self.last_activity.load(Ordering::Relaxed);
+        let now_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        Duration::from_millis(now_millis.saturating_sub(last_millis))
     }
 
     fn is_idle(&self, timeout: Duration) -> bool {
@@ -188,6 +206,16 @@ impl<T> IdleTimeoutStream<T> {
         }
         Ok(())
     }
+
+    fn is_normal_close(e: &std::io::Error) -> bool {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::UnexpectedEof
+        )
+    }
 }
 
 impl<T: AsyncRead + Unpin> AsyncRead for IdleTimeoutStream<T> {
@@ -195,16 +223,20 @@ impl<T: AsyncRead + Unpin> AsyncRead for IdleTimeoutStream<T> {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         self.check_idle()?;
 
         let initial_filled = buf.filled().len();
         let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
 
-        if let std::task::Poll::Ready(Ok(())) = poll
-            && buf.filled().len() > initial_filled
-        {
-            self.update_activity();
+        match &poll {
+            Poll::Ready(Ok(())) if buf.filled().len() > initial_filled => {
+                self.update_activity();
+            }
+            Poll::Ready(Err(e)) if Self::is_normal_close(e) => {
+                return Poll::Ready(Ok(()));
+            }
+            _ => {}
         }
 
         poll
@@ -216,32 +248,31 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for IdleTimeoutStream<T> {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<Result<usize, Error>> {
+    ) -> Poll<Result<usize, Error>> {
         self.check_idle()?;
 
         let poll = Pin::new(&mut self.inner).poll_write(cx, buf);
 
-        if let std::task::Poll::Ready(Ok(n)) = poll {
-            if n > 0 {
-                self.update_activity();
+        match poll {
+            Poll::Ready(Ok(n)) => {
+                if n > 0 {
+                    self.update_activity();
+                }
+                Poll::Ready(Ok(n))
             }
-            std::task::Poll::Ready(Ok(n))
-        } else {
-            poll
+            Poll::Ready(Err(e)) if Self::is_normal_close(&e) => {
+                // Treat normal close as successful write of all bytes
+                Poll::Ready(Ok(buf.len()))
+            }
+            _ => poll,
         }
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> std::task::Poll<Result<(), Error>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> std::task::Poll<Result<(), Error>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }

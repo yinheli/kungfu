@@ -1,52 +1,59 @@
 use anyhow::Error;
-use parking_lot::RwLock;
+use arc_swap::ArcSwap;
 use rayon::prelude::*;
 use std::net::IpAddr;
 use std::sync::Arc;
 
 use super::{MatchedRule, RuleConfig, RuleMatcher, RuleType};
 
-/// Rules management - handles rule matching with high-level API
+#[derive(Clone)]
+struct RulesData {
+    exclude_matchers: Vec<Arc<RuleMatcher>>,
+    domain_matchers: Vec<Arc<RuleMatcher>>,
+    dns_cidr_matchers: Vec<Arc<RuleMatcher>>,
+    route_matchers: Vec<Arc<RuleMatcher>>,
+}
+
+type CategorizedMatchers = (
+    Vec<Arc<RuleMatcher>>, // exclude_matchers
+    Vec<Arc<RuleMatcher>>, // domain_matchers
+    Vec<Arc<RuleMatcher>>, // dns_cidr_matchers
+    Vec<Arc<RuleMatcher>>, // route_matchers
+);
+
 pub struct Rules {
-    matchers: RwLock<Vec<Arc<RuleMatcher>>>,
+    data: ArcSwap<RulesData>,
 }
 
 impl Rules {
-    /// Create new Rules from configuration
     pub fn new(configs: Vec<RuleConfig>) -> Result<Self, Error> {
-        let mut matchers = Vec::new();
-        for config in configs {
-            let matcher = RuleMatcher::from_config(config)?;
-            matchers.push(Arc::new(matcher));
-        }
+        let (exclude_matchers, domain_matchers, dns_cidr_matchers, route_matchers) =
+            Self::categorize_matchers(configs)?;
+
+        let data = RulesData {
+            exclude_matchers,
+            domain_matchers,
+            dns_cidr_matchers,
+            route_matchers,
+        };
 
         Ok(Self {
-            matchers: RwLock::new(matchers),
+            data: ArcSwap::new(Arc::new(data)),
         })
     }
 
-    /// Check if domain should be excluded from proxying
     pub fn find_exclude_domain(&self, domain: &str) -> bool {
-        let matchers = self.matchers.read();
-        let exclude_matchers = matchers
-            .iter()
-            .filter(|m| m.rule_type == RuleType::ExcludeDomain)
-            .collect::<Vec<_>>();
+        let data = self.data.load();
 
-        exclude_matchers
+        data.exclude_matchers
             .par_iter()
             .any(|m| m.match_domain(domain).is_some())
     }
 
-    /// Find domain-based rule match
     pub fn find_domain_rule(&self, domain: &str) -> Option<MatchedRule> {
-        let matchers = self.matchers.read();
-        let domain_matchers = matchers
-            .iter()
-            .filter(|m| m.rule_type == RuleType::Domain)
-            .collect::<Vec<_>>();
+        let data = self.data.load();
 
-        domain_matchers.par_iter().find_map_any(|m| {
+        data.domain_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
             let matched_value = m.match_domain(domain)?.into_owned();
 
@@ -58,15 +65,10 @@ impl Rules {
         })
     }
 
-    /// Find DNS CIDR-based rule match
     pub fn find_dns_cidr_rule(&self, ip: &IpAddr) -> Option<MatchedRule> {
-        let matchers = self.matchers.read();
-        let cidr_matchers = matchers
-            .iter()
-            .filter(|m| m.rule_type == RuleType::DnsCidr)
-            .collect::<Vec<_>>();
+        let data = self.data.load();
 
-        cidr_matchers.par_iter().find_map_any(|m| {
+        data.dns_cidr_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
             let matched_value = m.match_cidr(ip)?.into_owned();
 
@@ -78,15 +80,10 @@ impl Rules {
         })
     }
 
-    /// Find route-based rule match
     pub fn find_route_rule(&self, ip: &IpAddr) -> Option<MatchedRule> {
-        let matchers = self.matchers.read();
-        let route_matchers = matchers
-            .iter()
-            .filter(|m| m.rule_type == RuleType::Route)
-            .collect::<Vec<_>>();
+        let data = self.data.load();
 
-        route_matchers.par_iter().find_map_any(|m| {
+        data.route_matchers.par_iter().find_map_any(|m| {
             let target = m.target.as_ref()?;
             let matched_value = m.match_cidr(ip)?.into_owned();
 
@@ -98,35 +95,74 @@ impl Rules {
         })
     }
 
-    /// Get all route rule CIDR values (for gateway setup)
     pub fn get_route_rules(&self) -> Vec<String> {
-        let matchers = self.matchers.read();
-        matchers
+        let data = self.data.load();
+        data.route_matchers
             .iter()
-            .filter(|m| m.rule_type == RuleType::Route)
             .flat_map(|m| m.values.clone())
             .collect()
     }
 
-    /// Hot-reload rules from new configuration
     pub fn reload(&self, configs: Vec<RuleConfig>) -> Result<(), Error> {
-        let mut new_matchers = Vec::new();
+        let (exclude_matchers, domain_matchers, dns_cidr_matchers, route_matchers) =
+            Self::categorize_matchers(configs)?;
+
+        let new_data = RulesData {
+            exclude_matchers,
+            domain_matchers,
+            dns_cidr_matchers,
+            route_matchers,
+        };
+
+        // Atomic swap - all readers will see the new data immediately
+        self.data.store(Arc::new(new_data));
+        Ok(())
+    }
+
+    fn categorize_matchers(configs: Vec<RuleConfig>) -> Result<CategorizedMatchers, Error> {
+        let mut exclude_matchers = Vec::new();
+        let mut domain_matchers = Vec::new();
+        let mut dns_cidr_matchers = Vec::new();
+        let mut route_matchers = Vec::new();
+
         for config in configs {
             let matcher = RuleMatcher::from_config(config)?;
-            new_matchers.push(Arc::new(matcher));
+            let matcher = Arc::new(matcher);
+
+            match matcher.rule_type {
+                RuleType::ExcludeDomain => exclude_matchers.push(matcher),
+                RuleType::Domain => domain_matchers.push(matcher),
+                RuleType::DnsCidr => dns_cidr_matchers.push(matcher),
+                RuleType::Route => route_matchers.push(matcher),
+                RuleType::DnsGeoIp => {
+                    // TODO: Implement GeoIP rule handling
+                }
+                RuleType::Unknown(_) => {
+                    log::warn!("Unknown rule type encountered");
+                }
+            }
         }
 
-        let mut matchers = self.matchers.write();
-        *matchers = new_matchers;
-
-        Ok(())
+        Ok((
+            exclude_matchers,
+            domain_matchers,
+            dns_cidr_matchers,
+            route_matchers,
+        ))
     }
 }
 
 impl Default for Rules {
     fn default() -> Self {
+        let data = RulesData {
+            exclude_matchers: vec![],
+            domain_matchers: vec![],
+            dns_cidr_matchers: vec![],
+            route_matchers: vec![],
+        };
+
         Self {
-            matchers: RwLock::new(vec![]),
+            data: ArcSwap::new(Arc::new(data)),
         }
     }
 }
