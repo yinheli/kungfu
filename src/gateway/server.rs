@@ -1,5 +1,5 @@
 use crate::{gateway::relay_tcp::TcpRelay, runtime::ArcRuntime};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use ipnet::IpNet;
 use log::{debug, error, info, warn};
 
@@ -79,7 +79,7 @@ impl Gateway {
 
     async fn serve(&self) {
         let dev = Arc::new(self.setup().await);
-        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel::<Bytes>();
 
         let write_task = async {
             let dev = dev.clone();
@@ -90,7 +90,7 @@ impl Gateway {
 
         let handle_task = async {
             let dev = dev.clone();
-            let mut buf = vec![0u8; 65536];
+            let mut buf = BytesMut::zeroed(65536);
             while let Ok(len) = dev.clone().recv(&mut buf).await {
                 let packet_tx = packet_tx.clone();
                 let mut ipv4 = ipv4::MutableIpv4Packet::new(&mut buf[..len]).unwrap();
@@ -197,15 +197,15 @@ impl Gateway {
 
     async fn handle_icmp_v4(
         &self,
-        packet_tx: UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
         let src = v4.get_source();
         let dst = v4.get_destination();
         let ttl = v4.get_ttl();
 
-        let mut payload = v4.payload().to_vec();
-        let mut packet = MutableIcmpPacket::new(&mut payload).unwrap();
+        let mut payload_vec = v4.payload().to_vec();
+        let mut packet = MutableIcmpPacket::new(&mut payload_vec).unwrap();
         let icmp_type = packet.get_icmp_type();
 
         let is_hijacked = self.network.hosts().any(|v| v == dst);
@@ -221,10 +221,10 @@ impl Gateway {
             v4.set_destination(src);
             v4.set_source(dst); // Simulating the target
             v4.set_ttl(64);
-            v4.set_payload(&payload);
+            v4.set_payload(&payload_vec);
             v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
-            let _ = packet_tx.send(v4.packet().to_vec());
+            let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
             return;
         }
 
@@ -238,10 +238,10 @@ impl Gateway {
                 v4.set_destination(src);
                 v4.set_source(dst); // Simulate the target responding
                 v4.set_ttl(64);
-                v4.set_payload(&payload);
+                v4.set_payload(&payload_vec);
                 v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
-                let _ = packet_tx.send(v4.packet().to_vec());
+                let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
             }
             _ => {
                 debug!("Ignoring ICMP type: {:?}", icmp_type);
@@ -251,7 +251,7 @@ impl Gateway {
 
     async fn handle_udp_v4(
         &self,
-        packet_tx: UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
         // Copy payload only once for packet parsing - unavoidable due to MutableUdpPacket requirements
@@ -297,7 +297,7 @@ impl Gateway {
             p.set_payload(payload);
             p.set_checksum(ipv4::checksum(&p.to_immutable()));
 
-            let _ = packet_tx.send(p.packet().to_vec());
+            let _ = packet_tx.send(Bytes::copy_from_slice(p.packet()));
         }
 
         let session = self.udp_nat.create(src, src_port, dst, dst_port).await;
@@ -305,7 +305,7 @@ impl Gateway {
         let udp_payload = packet.payload();
 
         let ip_header_length = v4.get_header_length();
-        let callback = move |data: Vec<u8>| {
+        let callback = move |data: Bytes| {
             let packet_tx = packet_tx.clone();
             let dst = dst;
             let src = src;
@@ -344,7 +344,7 @@ impl Gateway {
                 ip_packet.set_payload(udp_packet.packet());
                 ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
 
-                let _ = packet_tx.send(ip_packet.packet().to_vec());
+                let _ = packet_tx.send(Bytes::copy_from_slice(ip_packet.packet()));
             }
         };
 
@@ -353,7 +353,7 @@ impl Gateway {
 
     async fn handle_tcp_v4(
         &self,
-        packet_tx: UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
         // Copy payload only once for packet parsing - unavoidable due to MutableTcpPacket requirements
@@ -401,6 +401,6 @@ impl Gateway {
         v4.set_payload(packet.packet());
         v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
-        let _ = packet_tx.send(v4.packet().to_vec());
+        let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
     }
 }
