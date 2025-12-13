@@ -23,7 +23,7 @@ use crate::{gateway::stats, runtime::ArcRuntime};
 const UDP_BUFFER_SIZE: usize = 1500;
 const UDP_ASSOCIATE_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
-const SOCKS5_UDP_HEADER_MIN: usize = 10; // RSV(2) + FRAG(1) + ATYP(1) + LEN(1) + PORT(2)
+const SOCKS5_UDP_HEADER_MIN: usize = 10; // Minimum for IPv4: RSV(2) + FRAG(1) + ATYP(1) + IPv4(4) + PORT(2)
 
 // SOCKS5 Address Types
 const ATYP_IPV4: u8 = 1; // IPv4 address
@@ -129,8 +129,8 @@ impl UdpAssociation {
             return Err(anyhow!("Domain name too long"));
         }
 
-        // SOCKS5 UDP header: RSV(2) | FRAG(1) | ATYP(1) | DST.ADDR | DST.PORT(2) | DATA
-        let header_size = 6 + target_addr.len() + 2; // 6 + domain_len + port
+        // SOCKS5 UDP header: RSV(2) | FRAG(1) | ATYP(1) | DOMAIN_LEN(1) | DOMAIN | DST.PORT(2) | DATA
+        let header_size = 7 + target_addr.len(); // 2+1+1+1+domain_len+2 = 7+domain_len
         let total_size = header_size + data.len();
         let mut encoded = BytesMut::with_capacity(total_size);
 
@@ -187,10 +187,10 @@ impl UdpAssociation {
                 if buf.len() < 22 {
                     return Err(anyhow!("Truncated IPv6 address"));
                 }
-                let octets = &buf[5..21];
+                let octets = &buf[4..20]; // 16 bytes of IPv6 address
                 let mut arr = [0u8; 16];
                 arr.copy_from_slice(octets);
-                (std::net::Ipv6Addr::from(arr).to_string(), 21)
+                (std::net::Ipv6Addr::from(arr).to_string(), 20)
             }
             _ => return Err(anyhow!("Unknown ATYP: {}", atyp)),
         };

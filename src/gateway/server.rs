@@ -17,7 +17,10 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-use tokio::{join, sync::mpsc::{self, UnboundedSender}};
+use tokio::{
+    join,
+    sync::mpsc::{self, UnboundedSender},
+};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use super::{
@@ -91,7 +94,7 @@ impl Gateway {
         let handle_task = async {
             let dev = dev.clone();
             let mut buf = BytesMut::zeroed(65536);
-            while let Ok(len) = dev.clone().recv(&mut buf).await {
+            while let Ok(len) = dev.recv(&mut buf).await {
                 let packet_tx = packet_tx.clone();
                 let mut ipv4 = ipv4::MutableIpv4Packet::new(&mut buf[..len]).unwrap();
                 let protocol = ipv4.get_next_level_protocol();
@@ -154,7 +157,7 @@ impl Gateway {
 
             tokio::spawn(async {
                 use tokio::signal;
-                if let Ok(_) = signal::ctrl_c().await {
+                if signal::ctrl_c().await.is_ok() {
                     let _ = Command::new("networksetup")
                         .args(["-setdnsservers", "Wi-Fi", "empty"])
                         .output();
@@ -202,41 +205,22 @@ impl Gateway {
     ) {
         let src = v4.get_source();
         let dst = v4.get_destination();
-        let ttl = v4.get_ttl();
 
         let mut payload_vec = v4.payload().to_vec();
         let mut packet = MutableIcmpPacket::new(&mut payload_vec).unwrap();
         let icmp_type = packet.get_icmp_type();
 
-        let is_hijacked = self.network.hosts().any(|v| v == dst);
-
-        // Similar to UDP traceroute handling, if this is an Echo Request
-        // to a hijacked domain with low TTL, return a response
-        if icmp_type == IcmpTypes::EchoRequest && is_hijacked && ttl < 5 {
-            // For mtr/traceroute, we want to simulate reaching the destination
-            // by responding with Echo Reply directly
-            packet.set_icmp_type(IcmpTypes::EchoReply);
-            packet.set_checksum(icmp::checksum(&packet.to_immutable()));
-
-            v4.set_destination(src);
-            v4.set_source(dst); // Simulating the target
-            v4.set_ttl(64);
-            v4.set_payload(&payload_vec);
-            v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
-
-            let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
-            return;
-        }
-
-        // Handle normal ICMP packet
+        // Handle ICMP packet
         match icmp_type {
-            // Echo Request -> Echo Reply (ping)
             IcmpTypes::EchoRequest => {
+                // For both normal pings and traceroute to hijacked domains,
+                // we respond with Echo Reply from the target IP (dst)
+                // This ensures traceroute shows the destination as reachable
                 packet.set_icmp_type(IcmpTypes::EchoReply);
                 packet.set_checksum(icmp::checksum(&packet.to_immutable()));
 
                 v4.set_destination(src);
-                v4.set_source(dst); // Simulate the target responding
+                v4.set_source(dst); // Respond as if we are the target
                 v4.set_ttl(64);
                 v4.set_payload(&payload_vec);
                 v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
