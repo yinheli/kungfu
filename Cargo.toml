@@ -43,9 +43,9 @@ prometheus = { version = "0.14", features = ["process"] }
 rand = "0.9"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9.34"
+serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
-tun = { version = "0.8", features = ["async"] }
+tun-rs = { version = "2", features = ["async"] }
 url = "2"
 
 [profile.release]

@@ -1,6 +1,5 @@
 use crate::{gateway::relay_tcp::TcpRelay, runtime::ArcRuntime};
 use bytes::BytesMut;
-use futures::{SinkExt, StreamExt};
 use ipnet::IpNet;
 use log::{error, info};
 
@@ -18,8 +17,8 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-use tokio::{join, sync::mpsc};
-use tun::AsyncDevice;
+use tokio::sync::mpsc::{self, UnboundedSender};
+use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use super::{
     nat::{Nat, Type},
@@ -79,56 +78,53 @@ impl Gateway {
     }
 
     async fn serve(&self) {
-        let dev = self.setup().await;
-
-        let (mut writer, mut reader) = dev.into_framed().split();
-        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
+        let dev = Arc::new(self.setup().await);
+        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
         let write_task = async {
+            let dev = dev.clone();
             while let Some(packet) = packet_rx.recv().await {
-                let _ = writer.send(packet).await;
+                let _ = dev.send(&packet).await;
             }
         };
 
         let handle_task = async {
-            while let Some(Ok(mut packet)) = reader.next().await {
-                let mut v4 = ipv4::MutableIpv4Packet::new(&mut packet).unwrap();
-                let protocol = v4.get_next_level_protocol();
-
+            let dev = dev.clone();
+            let mut buf = vec![0u8; 65536];
+            while let Ok(len) = dev.clone().recv(&mut buf).await {
+                let packet_tx = packet_tx.clone();
+                let mut ipv4 = ipv4::MutableIpv4Packet::new(&mut buf[..len]).unwrap();
+                let protocol = ipv4.get_next_level_protocol();
                 match protocol {
-                    IpNextHeaderProtocols::Icmp => {
-                        self.handle_icmp_v4(packet_tx.clone(), &mut v4).await
-                    }
-                    IpNextHeaderProtocols::Udp => {
-                        self.handle_udp_v4(packet_tx.clone(), &mut v4).await
-                    }
-                    IpNextHeaderProtocols::Tcp => {
-                        self.handle_tcp_v4(packet_tx.clone(), &mut v4).await
-                    }
+                    IpNextHeaderProtocols::Icmp => self.handle_icmp_v4(packet_tx, &mut ipv4).await,
+                    IpNextHeaderProtocols::Udp => self.handle_udp_v4(packet_tx, &mut ipv4).await,
+                    IpNextHeaderProtocols::Tcp => self.handle_tcp_v4(packet_tx, &mut ipv4).await,
                     _ => {}
                 };
             }
         };
 
-        join!(write_task, handle_task);
+        tokio::join!(write_task, handle_task);
     }
 
     async fn setup(&self) -> AsyncDevice {
         info!("gateway addr: {}", self.network.addr());
-        let mut config = tun::Configuration::default();
-        config
-            .layer(tun::Layer::L3)
-            .address(self.network.addr())
-            .destination(self.gateway)
-            .netmask(self.network.netmask())
-            .up();
+
+        let mut builder = DeviceBuilder::new();
+
+        // Configure IPv4 address and netmask
+        let addr_str = self.network.addr().to_string();
+        let prefix_len = self.network.prefix_len();
+        builder = builder.ipv4(addr_str, prefix_len, None);
+        builder = builder.mtu(1500);
 
         #[cfg(target_os = "linux")]
         {
-            config.tun_name("kf0");
+            builder = builder.name("kf0");
+            builder = builder.tx_queue_len(1000);
         }
 
-        let dev = match tun::create_as_async(&config) {
+        let dev = match builder.build_async() {
             Ok(dev) => dev,
             Err(e) => {
                 error!("create tun failed, err: {:?}", e);
@@ -137,16 +133,16 @@ impl Gateway {
         };
 
         let gateway = &self.gateway.to_string();
-        let network = &format!("{}/{}", self.network.network(), self.network.prefix_len());
 
         #[cfg(target_os = "macos")]
         {
-            use log::debug;
             use std::thread::sleep;
             use std::time::Duration;
+
             // wait dev setup
             sleep(Duration::from_millis(200));
-            debug!("for macOS manual add net route {}", network);
+
+            let network = &format!("{}/{}", self.network.network(), self.network.prefix_len());
 
             let _ = Command::new("route")
                 .args(["-n", "-q", "add", "-net", network, gateway])
@@ -155,24 +151,16 @@ impl Gateway {
             let _ = Command::new("networksetup")
                 .args(["-setdnsservers", "Wi-Fi", "127.0.0.1"])
                 .output();
-        }
 
-        #[cfg(target_os = "macos")]
-        tokio::spawn(async {
-            use tokio::signal;
-            if let Ok(_) = signal::ctrl_c().await {
-                let _ = Command::new("networksetup")
-                    .args(["-setdnsservers", "Wi-Fi", "empty"])
-                    .output();
-                process::exit(0);
-            }
-        });
-
-        #[cfg(target_os = "linux")]
-        {
-            let _ = Command::new("ip")
-                .args(["route", "add", network, "via", gateway])
-                .output();
+            tokio::spawn(async {
+                use tokio::signal;
+                if let Ok(_) = signal::ctrl_c().await {
+                    let _ = Command::new("networksetup")
+                        .args(["-setdnsservers", "Wi-Fi", "empty"])
+                        .output();
+                    process::exit(0);
+                }
+            });
         }
 
         let routes = self.runtime.rules.get_route_rules();
@@ -180,9 +168,12 @@ impl Gateway {
         for r in routes {
             #[cfg(target_os = "linux")]
             {
-                let _ = Command::new("ip")
+                if let Err(e) = Command::new("ip")
                     .args(["route", "add", &r, "via", gateway])
-                    .output();
+                    .output()
+                {
+                    error!("add route {} via {} failed, err: {:?}", r, gateway, e);
+                }
             }
 
             #[cfg(target_os = "macos")]
@@ -206,7 +197,7 @@ impl Gateway {
 
     async fn handle_icmp_v4(
         &self,
-        packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Vec<u8>>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
         let mut payload = v4.payload().to_vec();
@@ -230,7 +221,7 @@ impl Gateway {
 
     async fn handle_udp_v4(
         &self,
-        packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Vec<u8>>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
         // Copy payload only once for packet parsing - unavoidable due to MutableUdpPacket requirements
@@ -281,10 +272,8 @@ impl Gateway {
 
         let session = self.udp_nat.create(src, src_port, dst, dst_port).await;
 
-        // Extract UDP payload - copy only once when sending to relay
         let udp_payload = packet.payload();
 
-        // Handle packet with callback pattern
         let ip_header_length = v4.get_header_length();
         let callback = move |data: Vec<u8>| {
             let packet_tx = packet_tx.clone();
@@ -334,7 +323,7 @@ impl Gateway {
 
     async fn handle_tcp_v4(
         &self,
-        packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Vec<u8>>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
         // Copy payload only once for packet parsing - unavoidable due to MutableTcpPacket requirements
