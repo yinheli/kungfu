@@ -45,9 +45,9 @@ const SOCKS5_REPLIES: [&str; 9] = [
 
 /// UDP Association maintains the SOCKS5 UDP ASSOCIATE control channel and UDP socket
 struct UdpAssociation {
-    _tcp_control: TcpStream,
-    udp_socket: Arc<UdpSocket>,
-    socks_udp_addr: SocketAddr,
+    _control: TcpStream,
+    socket: Arc<UdpSocket>,
+    addr: SocketAddr,
 }
 
 impl UdpAssociation {
@@ -72,30 +72,30 @@ impl UdpAssociation {
             Self::perform_no_auth(&mut tcp_control).await?;
         }
 
-        let socks_udp_addr = Self::perform_udp_associate(&mut tcp_control).await?;
+        let addr = Self::perform_udp_associate(&mut tcp_control).await?;
 
         // Some SOCKS5 proxies return 0.0.0.0 but expect UDP on the same port as TCP
-        let socks_udp_addr = if socks_udp_addr.ip().is_unspecified() {
+        let addr = if addr.ip().is_unspecified() {
             // Use the same host as the TCP connection but the port returned by UDP ASSOCIATE
             let peer_addr = tcp_control.peer_addr()?;
-            SocketAddr::new(peer_addr.ip(), socks_udp_addr.port())
+            SocketAddr::new(peer_addr.ip(), addr.port())
         } else {
-            socks_udp_addr
+            addr
         };
 
-        let udp_socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", nat_port)).await?);
+        let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", nat_port)).await?);
 
         Ok(Self {
-            _tcp_control: tcp_control,
-            udp_socket,
-            socks_udp_addr,
+            _control: tcp_control,
+            socket,
+            addr,
         })
     }
 
     /// Send UDP data through the SOCKS5 proxy
     async fn send(&self, data: &Bytes) -> Result<usize> {
-        self.udp_socket
-            .send_to(data, self.socks_udp_addr)
+        self.socket
+            .send_to(data, self.addr)
             .await
             .map_err(|e| e.into())
     }
@@ -103,7 +103,7 @@ impl UdpAssociation {
     /// Receive UDP data from the SOCKS5 proxy
     async fn recv(&self) -> Result<Option<Bytes>> {
         let mut buf = BytesMut::zeroed(UDP_BUFFER_SIZE);
-        match timeout(UDP_RESPONSE_TIMEOUT, self.udp_socket.recv_from(&mut buf))
+        match timeout(UDP_RESPONSE_TIMEOUT, self.socket.recv_from(&mut buf))
             .await
             .map_err(|e| anyhow!("UDP receive timeout: {}", e))?
             .map(|(len, _)| len)
@@ -315,7 +315,6 @@ impl UdpAssociation {
         Ok(addr)
     }
 }
-
 
 pub(crate) struct UdpRelay {
     runtime: ArcRuntime,
