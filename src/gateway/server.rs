@@ -1,7 +1,7 @@
 use crate::{gateway::relay_tcp::TcpRelay, runtime::ArcRuntime};
 use bytes::{Bytes, BytesMut};
 use ipnet::IpNet;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 use pnet::packet::{
     Packet,
@@ -17,7 +17,7 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::{join, sync::mpsc::{self, UnboundedSender}};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use super::{
@@ -104,7 +104,7 @@ impl Gateway {
             }
         };
 
-        tokio::join!(write_task, handle_task);
+        join!(write_task, handle_task);
     }
 
     async fn setup(&self) -> AsyncDevice {
@@ -254,10 +254,8 @@ impl Gateway {
         packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
-        // Copy payload only once for packet parsing - unavoidable due to MutableUdpPacket requirements
-        let payload = v4.payload();
-        let mut payload_vec = payload.to_vec();
-        let packet = MutableUdpPacket::new(&mut payload_vec).unwrap();
+        let mut payload = v4.payload().to_vec();
+        let packet = MutableUdpPacket::new(&mut payload).unwrap();
 
         let src = v4.get_source();
         let dst = v4.get_destination();
@@ -356,10 +354,8 @@ impl Gateway {
         packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
-        // Copy payload only once for packet parsing - unavoidable due to MutableTcpPacket requirements
-        let payload = v4.payload();
-        let mut payload_vec = payload.to_vec();
-        let mut packet = MutableTcpPacket::new(&mut payload_vec).unwrap();
+        let mut payload = v4.payload().to_vec();
+        let mut packet = MutableTcpPacket::new(&mut payload).unwrap();
 
         let src = v4.get_source();
         let dst = v4.get_destination();
