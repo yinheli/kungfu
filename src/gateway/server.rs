@@ -1,7 +1,7 @@
 use crate::{gateway::relay_tcp::TcpRelay, runtime::ArcRuntime};
 use bytes::BytesMut;
 use ipnet::IpNet;
-use log::{error, info};
+use log::{debug, error, info, warn};
 
 use pnet::packet::{
     Packet,
@@ -200,23 +200,53 @@ impl Gateway {
         packet_tx: UnboundedSender<Vec<u8>>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
-        let mut payload = v4.payload().to_vec();
-        let mut packet = MutableIcmpPacket::new(&mut payload).unwrap();
-
-        if packet.get_icmp_type() == IcmpTypes::EchoRequest {
-            packet.set_icmp_type(IcmpTypes::EchoReply);
-            packet.set_checksum(icmp::checksum(&packet.to_immutable()))
-        }
-
         let src = v4.get_source();
         let dst = v4.get_destination();
+        let ttl = v4.get_ttl();
 
-        v4.set_destination(src);
-        v4.set_source(dst);
-        v4.set_payload(&payload);
-        v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
+        let mut payload = v4.payload().to_vec();
+        let mut packet = MutableIcmpPacket::new(&mut payload).unwrap();
+        let icmp_type = packet.get_icmp_type();
 
-        let _ = packet_tx.send(v4.packet().to_vec());
+        let is_hijacked = self.network.hosts().any(|v| v == dst);
+
+        // Similar to UDP traceroute handling, if this is an Echo Request
+        // to a hijacked domain with low TTL, return a response
+        if icmp_type == IcmpTypes::EchoRequest && is_hijacked && ttl < 5 {
+            // For mtr/traceroute, we want to simulate reaching the destination
+            // by responding with Echo Reply directly
+            packet.set_icmp_type(IcmpTypes::EchoReply);
+            packet.set_checksum(icmp::checksum(&packet.to_immutable()));
+
+            v4.set_destination(src);
+            v4.set_source(dst); // Simulating the target
+            v4.set_ttl(64);
+            v4.set_payload(&payload);
+            v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
+
+            let _ = packet_tx.send(v4.packet().to_vec());
+            return;
+        }
+
+        // Handle normal ICMP packet
+        match icmp_type {
+            // Echo Request -> Echo Reply (ping)
+            IcmpTypes::EchoRequest => {
+                packet.set_icmp_type(IcmpTypes::EchoReply);
+                packet.set_checksum(icmp::checksum(&packet.to_immutable()));
+
+                v4.set_destination(src);
+                v4.set_source(dst); // Simulate the target responding
+                v4.set_ttl(64);
+                v4.set_payload(&payload);
+                v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
+
+                let _ = packet_tx.send(v4.packet().to_vec());
+            }
+            _ => {
+                debug!("Ignoring ICMP type: {:?}", icmp_type);
+            }
+        }
     }
 
     async fn handle_udp_v4(
