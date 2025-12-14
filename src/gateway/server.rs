@@ -1,8 +1,7 @@
 use crate::{gateway::relay_tcp::TcpRelay, runtime::ArcRuntime};
-use bytes::BytesMut;
-use futures::{SinkExt, StreamExt};
+use bytes::{Bytes, BytesMut};
 use ipnet::IpNet;
-use log::{error, info};
+use log::{debug, error, info};
 
 use pnet::packet::{
     Packet,
@@ -18,8 +17,11 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-use tokio::{join, sync::mpsc};
-use tun::AsyncDevice;
+use tokio::{
+    join,
+    sync::mpsc::{self, UnboundedSender},
+};
+use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use super::{
     nat::{Nat, Type},
@@ -79,32 +81,27 @@ impl Gateway {
     }
 
     async fn serve(&self) {
-        let dev = self.setup().await;
-
-        let (mut writer, mut reader) = dev.into_framed().split();
-        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
+        let dev = Arc::new(self.setup().await);
+        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel::<Bytes>();
 
         let write_task = async {
+            let dev = dev.clone();
             while let Some(packet) = packet_rx.recv().await {
-                let _ = writer.send(packet).await;
+                let _ = dev.send(&packet).await;
             }
         };
 
         let handle_task = async {
-            while let Some(Ok(mut packet)) = reader.next().await {
-                let mut v4 = ipv4::MutableIpv4Packet::new(&mut packet).unwrap();
-                let protocol = v4.get_next_level_protocol();
-
+            let dev = dev.clone();
+            let mut buf = BytesMut::zeroed(65536);
+            while let Ok(len) = dev.recv(&mut buf).await {
+                let packet_tx = packet_tx.clone();
+                let mut ipv4 = ipv4::MutableIpv4Packet::new(&mut buf[..len]).unwrap();
+                let protocol = ipv4.get_next_level_protocol();
                 match protocol {
-                    IpNextHeaderProtocols::Icmp => {
-                        self.handle_icmp_v4(packet_tx.clone(), &mut v4).await
-                    }
-                    IpNextHeaderProtocols::Udp => {
-                        self.handle_udp_v4(packet_tx.clone(), &mut v4).await
-                    }
-                    IpNextHeaderProtocols::Tcp => {
-                        self.handle_tcp_v4(packet_tx.clone(), &mut v4).await
-                    }
+                    IpNextHeaderProtocols::Icmp => self.handle_icmp_v4(packet_tx, &mut ipv4).await,
+                    IpNextHeaderProtocols::Udp => self.handle_udp_v4(packet_tx, &mut ipv4).await,
+                    IpNextHeaderProtocols::Tcp => self.handle_tcp_v4(packet_tx, &mut ipv4).await,
                     _ => {}
                 };
             }
@@ -115,20 +112,22 @@ impl Gateway {
 
     async fn setup(&self) -> AsyncDevice {
         info!("gateway addr: {}", self.network.addr());
-        let mut config = tun::Configuration::default();
-        config
-            .layer(tun::Layer::L3)
-            .address(self.network.addr())
-            .destination(self.gateway)
-            .netmask(self.network.netmask())
-            .up();
+
+        let mut builder = DeviceBuilder::new();
+
+        // Configure IPv4 address and netmask
+        let addr_str = self.network.addr().to_string();
+        let prefix_len = self.network.prefix_len();
+        builder = builder.ipv4(addr_str, prefix_len, None);
+        builder = builder.mtu(1500);
 
         #[cfg(target_os = "linux")]
         {
-            config.tun_name("kf0");
+            builder = builder.name("kf0");
+            builder = builder.tx_queue_len(1000);
         }
 
-        let dev = match tun::create_as_async(&config) {
+        let dev = match builder.build_async() {
             Ok(dev) => dev,
             Err(e) => {
                 error!("create tun failed, err: {:?}", e);
@@ -137,16 +136,16 @@ impl Gateway {
         };
 
         let gateway = &self.gateway.to_string();
-        let network = &format!("{}/{}", self.network.network(), self.network.prefix_len());
 
         #[cfg(target_os = "macos")]
         {
-            use log::debug;
             use std::thread::sleep;
             use std::time::Duration;
+
             // wait dev setup
             sleep(Duration::from_millis(200));
-            debug!("for macOS manual add net route {}", network);
+
+            let network = &format!("{}/{}", self.network.network(), self.network.prefix_len());
 
             let _ = Command::new("route")
                 .args(["-n", "-q", "add", "-net", network, gateway])
@@ -155,24 +154,16 @@ impl Gateway {
             let _ = Command::new("networksetup")
                 .args(["-setdnsservers", "Wi-Fi", "127.0.0.1"])
                 .output();
-        }
 
-        #[cfg(target_os = "macos")]
-        tokio::spawn(async {
-            use tokio::signal;
-            if let Ok(_) = signal::ctrl_c().await {
-                let _ = Command::new("networksetup")
-                    .args(["-setdnsservers", "Wi-Fi", "empty"])
-                    .output();
-                process::exit(0);
-            }
-        });
-
-        #[cfg(target_os = "linux")]
-        {
-            let _ = Command::new("ip")
-                .args(["route", "add", network, "via", gateway])
-                .output();
+            tokio::spawn(async {
+                use tokio::signal;
+                if signal::ctrl_c().await.is_ok() {
+                    let _ = Command::new("networksetup")
+                        .args(["-setdnsservers", "Wi-Fi", "empty"])
+                        .output();
+                    process::exit(0);
+                }
+            });
         }
 
         let routes = self.runtime.rules.get_route_rules();
@@ -180,9 +171,12 @@ impl Gateway {
         for r in routes {
             #[cfg(target_os = "linux")]
             {
-                let _ = Command::new("ip")
+                if let Err(e) = Command::new("ip")
                     .args(["route", "add", &r, "via", gateway])
-                    .output();
+                    .output()
+                {
+                    error!("add route {} via {} failed, err: {:?}", r, gateway, e);
+                }
             }
 
             #[cfg(target_os = "macos")]
@@ -206,37 +200,46 @@ impl Gateway {
 
     async fn handle_icmp_v4(
         &self,
-        packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
-        let mut payload = v4.payload().to_vec();
-        let mut packet = MutableIcmpPacket::new(&mut payload).unwrap();
-
-        if packet.get_icmp_type() == IcmpTypes::EchoRequest {
-            packet.set_icmp_type(IcmpTypes::EchoReply);
-            packet.set_checksum(icmp::checksum(&packet.to_immutable()))
-        }
-
         let src = v4.get_source();
         let dst = v4.get_destination();
 
-        v4.set_destination(src);
-        v4.set_source(dst);
-        v4.set_payload(&payload);
-        v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
+        let mut payload_vec = v4.payload().to_vec();
+        let mut packet = MutableIcmpPacket::new(&mut payload_vec).unwrap();
+        let icmp_type = packet.get_icmp_type();
 
-        let _ = packet_tx.send(v4.packet().to_vec());
+        // Handle ICMP packet
+        match icmp_type {
+            IcmpTypes::EchoRequest => {
+                // For both normal pings and traceroute to hijacked domains,
+                // we respond with Echo Reply from the target IP (dst)
+                // This ensures traceroute shows the destination as reachable
+                packet.set_icmp_type(IcmpTypes::EchoReply);
+                packet.set_checksum(icmp::checksum(&packet.to_immutable()));
+
+                v4.set_destination(src);
+                v4.set_source(dst); // Respond as if we are the target
+                v4.set_ttl(64);
+                v4.set_payload(&payload_vec);
+                v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
+
+                let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
+            }
+            _ => {
+                debug!("Ignoring ICMP type: {:?}", icmp_type);
+            }
+        }
     }
 
     async fn handle_udp_v4(
         &self,
-        packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
-        // Copy payload only once for packet parsing - unavoidable due to MutableUdpPacket requirements
-        let payload = v4.payload();
-        let mut payload_vec = payload.to_vec();
-        let packet = MutableUdpPacket::new(&mut payload_vec).unwrap();
+        let mut payload = v4.payload().to_vec();
+        let packet = MutableUdpPacket::new(&mut payload).unwrap();
 
         let src = v4.get_source();
         let dst = v4.get_destination();
@@ -276,17 +279,15 @@ impl Gateway {
             p.set_payload(payload);
             p.set_checksum(ipv4::checksum(&p.to_immutable()));
 
-            let _ = packet_tx.send(p.packet().to_vec());
+            let _ = packet_tx.send(Bytes::copy_from_slice(p.packet()));
         }
 
         let session = self.udp_nat.create(src, src_port, dst, dst_port).await;
 
-        // Extract UDP payload - copy only once when sending to relay
         let udp_payload = packet.payload();
 
-        // Handle packet with callback pattern
         let ip_header_length = v4.get_header_length();
-        let callback = move |data: Vec<u8>| {
+        let callback = move |data: Bytes| {
             let packet_tx = packet_tx.clone();
             let dst = dst;
             let src = src;
@@ -325,7 +326,7 @@ impl Gateway {
                 ip_packet.set_payload(udp_packet.packet());
                 ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
 
-                let _ = packet_tx.send(ip_packet.packet().to_vec());
+                let _ = packet_tx.send(Bytes::copy_from_slice(ip_packet.packet()));
             }
         };
 
@@ -334,13 +335,11 @@ impl Gateway {
 
     async fn handle_tcp_v4(
         &self,
-        packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+        packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
-        // Copy payload only once for packet parsing - unavoidable due to MutableTcpPacket requirements
-        let payload = v4.payload();
-        let mut payload_vec = payload.to_vec();
-        let mut packet = MutableTcpPacket::new(&mut payload_vec).unwrap();
+        let mut payload = v4.payload().to_vec();
+        let mut packet = MutableTcpPacket::new(&mut payload).unwrap();
 
         let src = v4.get_source();
         let dst = v4.get_destination();
@@ -382,6 +381,6 @@ impl Gateway {
         v4.set_payload(packet.packet());
         v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
-        let _ = packet_tx.send(v4.packet().to_vec());
+        let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
     }
 }
