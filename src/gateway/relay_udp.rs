@@ -23,6 +23,7 @@ use crate::{gateway::stats, runtime::ArcRuntime};
 const UDP_BUFFER_SIZE: usize = 1500;
 const UDP_ASSOCIATE_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const UDP_ASSOCIATION_TTL: Duration = Duration::from_secs(20);
 const SOCKS5_UDP_HEADER_MIN: usize = 10; // Minimum for IPv4: RSV(2) + FRAG(1) + ATYP(1) + IPv4(4) + PORT(2)
 
 // SOCKS5 Address Types
@@ -324,7 +325,7 @@ pub(crate) struct UdpRelay {
 
 impl UdpRelay {
     pub fn new(runtime: ArcRuntime, rx: Receiver<u16>) -> Self {
-        let associations = Cache::builder().build();
+        let associations = Cache::builder().time_to_idle(UDP_ASSOCIATION_TTL).build();
 
         let invalidates = associations.clone();
         tokio::spawn(async move {
@@ -396,6 +397,7 @@ impl UdpRelay {
         let runtime = self.runtime.clone();
         let proxy_name = proxy_name.to_string();
         let target_host = target_host.to_string();
+        let associations_cache = self.associations.clone();
         tokio::spawn(async move {
             while let Ok(Some(data)) = assoc_clone.recv().await {
                 if let Ok((_src_addr, _src_port, data)) = UdpAssociation::decode_socks5_udp(&data) {
@@ -411,6 +413,14 @@ impl UdpRelay {
                     );
                 }
             }
+            // Receive loop ended (timeout or error) - invalidate this association immediately
+            // to force recreation on next request instead of waiting for TTL expiration
+            log::debug!(
+                "UDP receive loop ended for proxy {} (nat_port: {}), invalidating association",
+                proxy_name,
+                nat_port
+            );
+            associations_cache.invalidate(&nat_port);
         });
 
         Ok(assoc)
@@ -431,7 +441,13 @@ impl UdpRelay {
         let (proxy_name, target_host, target_port) = target;
         let max_payload = UDP_BUFFER_SIZE - (SOCKS5_UDP_HEADER_MIN + target_host.len());
         if payload.len() > max_payload {
-            debug!("UDP payload too large: {} > {}", payload.len(), max_payload);
+            log::warn!(
+                "UDP payload too large: {} > {} (host: {}, nat_port: {})",
+                payload.len(),
+                max_payload,
+                target_host,
+                nat_port
+            );
             return Ok(());
         }
 
