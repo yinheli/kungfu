@@ -1,5 +1,6 @@
+use dashmap::DashMap;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::{
-    collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     time::Duration,
@@ -12,7 +13,7 @@ use moka::sync::Cache;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
-    sync::{Mutex, mpsc::Receiver},
+    sync::mpsc::Receiver,
     time::timeout,
 };
 use url::Url;
@@ -24,14 +25,12 @@ const UDP_BUFFER_SIZE: usize = 1500;
 const UDP_ASSOCIATE_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_ASSOCIATION_TTL: Duration = Duration::from_secs(20);
-const SOCKS5_UDP_HEADER_MIN: usize = 10; // Minimum for IPv4: RSV(2) + FRAG(1) + ATYP(1) + IPv4(4) + PORT(2)
+const SOCKS5_UDP_HEADER_MIN: usize = 10;
 
-// SOCKS5 Address Types
-const ATYP_IPV4: u8 = 1; // IPv4 address
-const ATYP_DOMAIN: u8 = 3; // Domain name
-const ATYP_IPV6: u8 = 4; // IPv6 address
+const ATYP_IPV4: u8 = 1;
+const ATYP_DOMAIN: u8 = 3;
+const ATYP_IPV6: u8 = 4;
 
-/// SOCKS5 reply descriptions indexed by reply code
 const SOCKS5_REPLIES: [&str; 9] = [
     "succeeded",
     "general SOCKS server failure",
@@ -44,16 +43,16 @@ const SOCKS5_REPLIES: [&str; 9] = [
     "address type not supported",
 ];
 
-/// UDP Association maintains the SOCKS5 UDP ASSOCIATE control channel and UDP socket
+/// Optimized UDP Association with pre-computed metadata
 struct UdpAssociation {
     _control: TcpStream,
     socket: Arc<UdpSocket>,
     addr: SocketAddr,
+    max_payload: usize,
 }
 
 impl UdpAssociation {
-    /// Create a new SOCKS5 UDP association
-    async fn new(proxy_url: &str, nat_port: u16) -> Result<Self> {
+    async fn new(proxy_url: &str, nat_port: u16, target_host: &str) -> Result<Self> {
         let url = Url::parse(proxy_url)?;
         let host = url.host().ok_or_else(|| anyhow!("missing host"))?;
         let port = url.port().unwrap_or(1080);
@@ -61,7 +60,6 @@ impl UdpAssociation {
         let proxy_addr = format!("{}:{}", host, port);
         let mut tcp_control = TcpStream::connect(&proxy_addr).await?;
 
-        // SOCKS5 handshake
         if url.username() != "" {
             Self::perform_auth(
                 &mut tcp_control,
@@ -75,25 +73,35 @@ impl UdpAssociation {
 
         let addr = Self::perform_udp_associate(&mut tcp_control).await?;
 
-        // Some SOCKS5 proxies return 0.0.0.0 but expect UDP on the same port as TCP
         let addr = if addr.ip().is_unspecified() {
-            // Use the same host as the TCP connection but the port returned by UDP ASSOCIATE
             let peer_addr = tcp_control.peer_addr()?;
             SocketAddr::new(peer_addr.ip(), addr.port())
         } else {
             addr
         };
 
-        let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", nat_port)).await?);
+        const SOCKET_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_recv_buffer_size(SOCKET_BUFFER_SIZE)?;
+        socket.set_send_buffer_size(SOCKET_BUFFER_SIZE)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(
+            &format!("0.0.0.0:{}", nat_port)
+                .parse::<SocketAddr>()?
+                .into(),
+        )?;
+
+        let socket = Arc::new(UdpSocket::from_std(socket.into())?);
+        let max_payload = UDP_BUFFER_SIZE - (SOCKS5_UDP_HEADER_MIN + target_host.len());
 
         Ok(Self {
             _control: tcp_control,
             socket,
             addr,
+            max_payload,
         })
     }
 
-    /// Send UDP data through the SOCKS5 proxy
     async fn send(&self, data: &Bytes) -> Result<usize> {
         self.socket
             .send_to(data, self.addr)
@@ -101,7 +109,6 @@ impl UdpAssociation {
             .map_err(|e| e.into())
     }
 
-    /// Receive UDP data from the SOCKS5 proxy
     async fn recv(&self) -> Result<Option<Bytes>> {
         let mut buf = BytesMut::zeroed(UDP_BUFFER_SIZE);
         match timeout(UDP_RESPONSE_TIMEOUT, self.socket.recv_from(&mut buf))
@@ -120,18 +127,13 @@ impl UdpAssociation {
         }
     }
 
-    /// Encode SOCKS5 UDP datagram: [RSV(2) | FRAG | ATYP | DST.ADDR | DST.PORT | DATA]
-    ///
-    /// Always use domain name (ATYP=3) to let SOCKS5 proxy server resolve the address.
-    /// This is essential for DNS hijacking scenarios where we need the proxy to resolve
-    /// the original domain name instead of connecting to the hijacked IP.
     fn encode_socks5_udp(&self, target_addr: &str, target_port: u16, data: &[u8]) -> Result<Bytes> {
         if target_addr.len() > 255 {
             return Err(anyhow!("Domain name too long"));
         }
 
         // SOCKS5 UDP header: RSV(2) | FRAG(1) | ATYP(1) | DOMAIN_LEN(1) | DOMAIN | DST.PORT(2) | DATA
-        let header_size = 7 + target_addr.len(); // 2+1+1+1+domain_len+2 = 7+domain_len
+        let header_size = 7 + target_addr.len();
         let total_size = header_size + data.len();
         let mut encoded = BytesMut::with_capacity(total_size);
 
@@ -153,7 +155,6 @@ impl UdpAssociation {
         Ok(encoded.freeze())
     }
 
-    /// Decode SOCKS5 UDP datagram from proxy response
     fn decode_socks5_udp(buf: &[u8]) -> Result<(String, u16, Bytes)> {
         if buf.len() < SOCKS5_UDP_HEADER_MIN {
             return Err(anyhow!("UDP datagram too short"));
@@ -188,7 +189,7 @@ impl UdpAssociation {
                 if buf.len() < 22 {
                     return Err(anyhow!("Truncated IPv6 address"));
                 }
-                let octets = &buf[4..20]; // 16 bytes of IPv6 address
+                let octets = &buf[4..20];
                 let mut arr = [0u8; 16];
                 arr.copy_from_slice(octets);
                 (std::net::Ipv6Addr::from(arr).to_string(), 20)
@@ -206,7 +207,6 @@ impl UdpAssociation {
         Ok((addr, port, data))
     }
 
-    /// SOCKS5 authentication with username/password
     async fn perform_auth(stream: &mut TcpStream, username: &str, password: &str) -> Result<()> {
         let auth_methods = vec![5u8, 1, 2];
         stream.write_all(&auth_methods).await?;
@@ -236,7 +236,6 @@ impl UdpAssociation {
         Ok(())
     }
 
-    /// SOCKS5 no authentication
     async fn perform_no_auth(stream: &mut TcpStream) -> Result<()> {
         let auth_methods = vec![5u8, 1, 0];
         stream.write_all(&auth_methods).await?;
@@ -251,9 +250,8 @@ impl UdpAssociation {
         Ok(())
     }
 
-    /// Perform SOCKS5 UDP ASSOCIATE and return the UDP relay address
     async fn perform_udp_associate(stream: &mut TcpStream) -> Result<SocketAddr> {
-        let mut request = BytesMut::with_capacity(10); // Fixed size for UDP ASSOCIATE request
+        let mut request = BytesMut::with_capacity(10);
         request.put_u8(5);
         request.put_u8(3);
         request.put_u8(0);
@@ -317,28 +315,48 @@ impl UdpAssociation {
     }
 }
 
+/// Cached routing information to avoid repeated lookups
+#[derive(Clone)]
+struct RouteCache {
+    proxy_name: String,
+    target_host: String,
+    target_port: u16,
+}
+
 pub(crate) struct UdpRelay {
     runtime: ArcRuntime,
     associations: Cache<u16, Arc<UdpAssociation>>,
-    lock: Mutex<HashMap<u16, Arc<Mutex<Option<()>>>>>,
+    creating: DashMap<u16, Arc<tokio::sync::Mutex<()>>>,
+    route_cache: Cache<u16, RouteCache>,
 }
 
 impl UdpRelay {
     pub fn new(runtime: ArcRuntime, rx: Receiver<u16>) -> Self {
-        let associations = Cache::builder().time_to_idle(UDP_ASSOCIATION_TTL).build();
+        let associations = Cache::builder()
+            .max_capacity(1000)
+            .time_to_idle(UDP_ASSOCIATION_TTL)
+            .build();
+
+        let route_cache = Cache::builder()
+            .max_capacity(1000)
+            .time_to_idle(UDP_ASSOCIATION_TTL)
+            .build();
 
         let invalidates = associations.clone();
+        let route_invalidates = route_cache.clone();
         tokio::spawn(async move {
             let mut rx = rx;
             while let Some(nat_port) = rx.recv().await {
                 invalidates.invalidate(&nat_port);
+                route_invalidates.invalidate(&nat_port);
             }
         });
 
         Self {
             runtime,
             associations,
-            lock: Default::default(),
+            creating: DashMap::new(),
+            route_cache,
         }
     }
 
@@ -356,15 +374,14 @@ impl UdpRelay {
         if let Some(assoc) = self.associations.get(&nat_port) {
             return Ok(assoc);
         }
-        let pending_lock = {
-            let mut pending = self.lock.lock().await;
-            pending
-                .entry(nat_port)
-                .or_insert_with(|| Arc::new(Mutex::new(None)))
-                .clone()
-        };
 
-        let _guard = pending_lock.lock().await;
+        let lock = self
+            .creating
+            .entry(nat_port)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+
+        let _guard = lock.lock().await;
 
         if let Some(assoc) = self.associations.get(&nat_port) {
             return Ok(assoc);
@@ -387,7 +404,7 @@ impl UdpRelay {
 
         let assoc = timeout(
             UDP_ASSOCIATE_TIMEOUT,
-            UdpAssociation::new(&proxy_url, nat_port),
+            UdpAssociation::new(&proxy_url, nat_port, target_host),
         )
         .await??;
         let assoc = Arc::new(assoc);
@@ -413,8 +430,6 @@ impl UdpRelay {
                     );
                 }
             }
-            // Receive loop ended (timeout or error) - invalidate this association immediately
-            // to force recreation on next request instead of waiting for TTL expiration
             log::debug!(
                 "UDP receive loop ended for proxy {} (nat_port: {}), invalidating association",
                 proxy_name,
@@ -422,6 +437,8 @@ impl UdpRelay {
             );
             associations_cache.invalidate(&nat_port);
         });
+
+        self.creating.remove(&nat_port);
 
         Ok(assoc)
     }
@@ -437,33 +454,44 @@ impl UdpRelay {
         Fut: std::future::Future<Output = ()> + Send,
     {
         let nat_port = session.nat_port;
-        let target = self.find_target(session).await?;
-        let (proxy_name, target_host, target_port) = target;
-        let max_payload = UDP_BUFFER_SIZE - (SOCKS5_UDP_HEADER_MIN + target_host.len());
-        if payload.len() > max_payload {
+
+        let route = if let Some(cached) = self.route_cache.get(&nat_port) {
+            cached
+        } else {
+            let target = self.find_target(session).await?;
+            let route = RouteCache {
+                proxy_name: target.0,
+                target_host: target.1,
+                target_port: target.2,
+            };
+            self.route_cache.insert(nat_port, route.clone());
+            route
+        };
+
+        let assoc = self
+            .get_or_create_association(&route.proxy_name, &route.target_host, nat_port, callback)
+            .await?;
+
+        if payload.len() > assoc.max_payload {
             log::warn!(
                 "UDP payload too large: {} > {} (host: {}, nat_port: {})",
                 payload.len(),
-                max_payload,
-                target_host,
+                assoc.max_payload,
+                route.target_host,
                 nat_port
             );
             return Ok(());
         }
 
-        let assoc = self
-            .get_or_create_association(&proxy_name, &target_host, nat_port, callback)
-            .await?;
-
-        let encoded = assoc.encode_socks5_udp(&target_host, target_port, payload)?;
+        let encoded = assoc.encode_socks5_udp(&route.target_host, route.target_port, payload)?;
 
         let _ = assoc.send(&encoded).await?;
 
         stats::update_metrics(
             &self.runtime,
             stats::Protocol::Udp,
-            &proxy_name,
-            &target_host,
+            &route.proxy_name,
+            &route.target_host,
             payload.len() as u64,
             0,
         );

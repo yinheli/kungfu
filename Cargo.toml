@@ -22,6 +22,7 @@ async-trait = "0.1"
 bimap = "0.6"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
+dashmap = "6"
 env_logger = "0.11"
 fast-socks5 = "0.10"
 futures = "0.3"
@@ -44,6 +45,7 @@ rand = "0.9"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+socket2 = "0.5"
 tokio = { version = "1", features = ["full"] }
 tun-rs = { version = "2", features = ["async"] }
 url = "2"
