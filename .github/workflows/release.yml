@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 env:
   CARGO_INCREMENTAL: 0
@@ -112,6 +113,11 @@ jobs:
     needs: [github_build]
     runs-on: ubuntu-latest
     steps:
+      - name: Setup | Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for git-cliff to analyze full history
+
       - name: Setup | Artifacts
         uses: actions/download-artifact@v7
         with:
@@ -128,11 +134,24 @@ jobs:
             fi
           done
 
+      - name: Generate Release Notes
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --latest --tag ${{ github.ref_name }}
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Display generated changelog
+        run: cat CHANGELOG.md
+
       - name: Build | Add Artifacts to Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          body_path: CHANGELOG.md
           files: |
             kungfu-*/kungfu-*.tar.gz
             kungfu-*/kungfu-*.tar.gz.sha256
