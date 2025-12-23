@@ -12,7 +12,7 @@ use moka::sync::Cache;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
-    sync::{Mutex, mpsc::Receiver},
+    sync::{Mutex, mpsc::UnboundedReceiver},
     time::timeout,
 };
 use url::Url;
@@ -324,7 +324,7 @@ pub(crate) struct UdpRelay {
 }
 
 impl UdpRelay {
-    pub fn new(runtime: ArcRuntime, rx: Receiver<u16>) -> Self {
+    pub fn new(runtime: ArcRuntime, rx: UnboundedReceiver<u16>) -> Self {
         let associations = Cache::builder().time_to_idle(UDP_ASSOCIATION_TTL).build();
 
         let invalidates = associations.clone();
