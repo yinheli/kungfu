@@ -12,6 +12,7 @@ use pnet::packet::{
     udp::MutableUdpPacket,
 };
 use std::{
+    io::Error,
     net::Ipv4Addr,
     process::{self, Command},
     str::FromStr,
@@ -58,7 +59,7 @@ impl Gateway {
             .expect("Failed to get local address")
             .port();
 
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = mpsc::unbounded_channel();
         let tcp_nat = Arc::new(Nat::new(Type::Tcp, None));
         let udp_nat = Arc::new(Nat::new(Type::Udp, Some(tx)));
         let udp_relay = UdpRelay::new(runtime.clone(), rx);
@@ -98,12 +99,22 @@ impl Gateway {
                 let packet_tx = packet_tx.clone();
                 let mut ipv4 = ipv4::MutableIpv4Packet::new(&mut buf[..len]).unwrap();
                 let protocol = ipv4.get_next_level_protocol();
-                match protocol {
-                    IpNextHeaderProtocols::Icmp => self.handle_icmp_v4(packet_tx, &mut ipv4).await,
-                    IpNextHeaderProtocols::Udp => self.handle_udp_v4(packet_tx, &mut ipv4).await,
-                    IpNextHeaderProtocols::Tcp => self.handle_tcp_v4(packet_tx, &mut ipv4).await,
-                    _ => {}
+                let handle_result = match protocol {
+                    IpNextHeaderProtocols::Icmp => {
+                        self.handle_icmp_v4(packet_tx.clone(), &mut ipv4).await;
+                        Ok(())
+                    }
+                    IpNextHeaderProtocols::Udp => {
+                        self.handle_udp_v4(packet_tx.clone(), &mut ipv4).await
+                    }
+                    IpNextHeaderProtocols::Tcp => {
+                        self.handle_tcp_v4(packet_tx.clone(), &mut ipv4).await
+                    }
+                    _ => Ok(()),
                 };
+                if let Err(e) = handle_result {
+                    error!("Failed to handle packet: {}", e);
+                }
             }
         };
 
@@ -237,7 +248,7 @@ impl Gateway {
         &self,
         packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
-    ) {
+    ) -> Result<(), Error> {
         let mut payload = v4.payload().to_vec();
         let packet = MutableUdpPacket::new(&mut payload).unwrap();
 
@@ -282,7 +293,7 @@ impl Gateway {
             let _ = packet_tx.send(Bytes::copy_from_slice(p.packet()));
         }
 
-        let session = self.udp_nat.create(src, src_port, dst, dst_port).await;
+        let session = self.udp_nat.create(src, src_port, dst, dst_port).await?;
 
         let udp_payload = packet.payload();
 
@@ -331,13 +342,14 @@ impl Gateway {
         };
 
         let _ = self.udp_relay.send(session, udp_payload, callback).await;
+        Ok(())
     }
 
     async fn handle_tcp_v4(
         &self,
         packet_tx: UnboundedSender<Bytes>,
         v4: &mut MutableIpv4Packet<'_>,
-    ) {
+    ) -> Result<(), Error> {
         let mut payload = v4.payload().to_vec();
         let mut packet = MutableTcpPacket::new(&mut payload).unwrap();
 
@@ -352,7 +364,7 @@ impl Gateway {
             let session = nat.find(dst_port).await;
             match session {
                 None => {
-                    return;
+                    return Ok(());
                 }
                 Some(ref session) => {
                     packet.set_source(session.dst_port);
@@ -363,7 +375,7 @@ impl Gateway {
                 }
             }
         } else {
-            let session = nat.create(src, src_port, dst, dst_port).await;
+            let session = nat.create(src, src_port, dst, dst_port).await?;
 
             packet.set_source(session.nat_port);
             packet.set_destination(self.relay_port);
@@ -382,5 +394,6 @@ impl Gateway {
         v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
         let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
+        Ok(())
     }
 }

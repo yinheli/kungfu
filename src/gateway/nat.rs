@@ -1,13 +1,13 @@
 use bimap::BiMap;
 use std::{
+    io::Error,
     net::{self, Ipv4Addr},
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{RwLock, mpsc::Sender};
+use tokio::sync::{RwLock, mpsc::UnboundedSender};
 
 use moka::future::Cache;
-use rand::random;
 
 pub struct Nat {
     nat_type: Type,
@@ -30,8 +30,11 @@ pub struct Session {
 }
 
 impl Nat {
-    pub fn new(nat_type: Type, tx: Option<Sender<u16>>) -> Self {
-        let ttl = Duration::from_secs(30);
+    pub fn new(nat_type: Type, tx: Option<UnboundedSender<u16>>) -> Self {
+        let ttl = match nat_type {
+            Type::Tcp => Duration::from_secs(60),
+            Type::Udp => Duration::from_secs(20),
+        };
 
         let mapping = Arc::new(RwLock::new(BiMap::new()));
         let cache = Self::new_cache(ttl, mapping.clone(), tx);
@@ -49,27 +52,27 @@ impl Nat {
         src_port: u16,
         dst_addr: Ipv4Addr,
         dst_port: u16,
-    ) -> Session {
+    ) -> Result<Session, Error> {
         let addr_key = u32::from_be_bytes(src_addr.octets()) + src_port as u32;
 
         if let Some(session) = self.cache.get(&addr_key).await {
-            return *session;
+            return Ok(*session);
         }
 
         let nat_port = {
             let mapping = self.mapping.read().await;
 
             if let Some(&nat_port) = mapping.get_by_left(&addr_key) {
-                return Session {
+                return Ok(Session {
                     src_addr,
                     dst_addr,
                     src_port,
                     dst_port,
                     nat_port,
-                };
+                });
             }
 
-            self.get_available_port()
+            self.get_available_port()?
         };
 
         let session = Arc::new(Session {
@@ -87,7 +90,7 @@ impl Nat {
             mapping.insert(addr_key, nat_port);
         }
 
-        *session
+        Ok(*session)
     }
 
     pub async fn find(&self, nat_port: u16) -> Option<Session> {
@@ -119,19 +122,19 @@ impl Nat {
     fn new_cache(
         ttl: Duration,
         mapping: Arc<RwLock<BiMap<u32, u16>>>,
-        tx: Option<Sender<u16>>,
+        tx: Option<UnboundedSender<u16>>,
     ) -> Cache<u32, Arc<Session>> {
         Cache::builder()
             .max_capacity(5000)
             .time_to_idle(ttl)
             .eviction_listener(move |addr_key: Arc<u32>, session: Arc<Session>, _cause| {
                 let mapping = mapping.clone();
-                let tx_clone = tx.clone();
+                let tx = tx.clone();
                 tokio::task::spawn(async move {
                     let mut mapping_guard = mapping.write().await;
                     let _ = mapping_guard.remove_by_left(&*addr_key);
-                    if let Some(ref tx) = tx_clone {
-                        let _ = tx.try_send(session.nat_port);
+                    if let Some(ref tx) = tx {
+                        let _ = tx.send(session.nat_port);
                     }
                 });
             })
@@ -143,40 +146,17 @@ impl Nat {
         mapping.get_by_right(nat_port).copied()
     }
 
-    fn get_available_port(&self) -> u16 {
+    fn get_available_port(&self) -> Result<u16, Error> {
         match self.nat_type {
             Type::Tcp => {
-                let ln = net::TcpListener::bind("127.0.0.1:0");
-                match ln {
-                    Ok(listener) => {
-                        match listener.local_addr() {
-                            Ok(addr) => addr.port(),
-                            Err(_) => {
-                                // Fallback to a random high port
-                                random::<u16>().max(1024)
-                            }
-                        }
-                    }
-                    Err(_) => random::<u16>().max(1024),
-                }
+                let listener = net::TcpListener::bind("127.0.0.1:0")?;
+                let addr = listener.local_addr()?;
+                Ok(addr.port())
             }
             Type::Udp => {
-                let ln = net::UdpSocket::bind("127.0.0.1:0");
-                match ln {
-                    Ok(socket) => {
-                        match socket.local_addr() {
-                            Ok(addr) => addr.port(),
-                            Err(_) => {
-                                // Fallback to a random high port
-                                random::<u16>().max(1024)
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Fallback to a random high port
-                        random::<u16>().max(1024)
-                    }
-                }
+                let socket = net::UdpSocket::bind("127.0.0.1:0")?;
+                let addr = socket.local_addr()?;
+                Ok(addr.port())
             }
         }
     }
@@ -196,7 +176,8 @@ mod tests {
                 Ipv4Addr::new(127, 0, 0, 1),
                 80,
             )
-            .await;
+            .await
+            .unwrap();
 
         assert_ne!(session.nat_port, 0);
 
@@ -212,7 +193,8 @@ mod tests {
                 Ipv4Addr::new(127, 0, 0, 1),
                 80,
             )
-            .await;
+            .await
+            .unwrap();
         assert_ne!(session.nat_port, 0);
     }
 }
