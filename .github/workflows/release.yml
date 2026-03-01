@@ -103,7 +103,7 @@ jobs:
           tar czvf ../../../${{ matrix.name }} kungfu config README.md
           cd -
       - name: Deploy | Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}
