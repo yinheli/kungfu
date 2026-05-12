@@ -25,7 +25,7 @@ const EPHEMERAL_PORT_END: u16 = 65535;
 const EPHEMERAL_PORT_RANGE: u16 = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
 
 pub struct Nat {
-    cache: Cache<SessionKey, Arc<Session>>,
+    cache: Cache<SessionKey, Session>,
     mapping: Arc<RwLock<BiMap<SessionKey, u16>>>,
     port_counter: AtomicU16,
 }
@@ -76,22 +76,22 @@ impl Nat {
         };
 
         if let Some(session) = self.cache.get(&addr_key).await {
-            return Ok(*session);
+            return Ok(session);
         }
 
         let nat_port = {
             let mut mapping = self.mapping.write().await;
 
             if let Some(&nat_port) = mapping.get_by_left(&addr_key) {
-                let session = Arc::new(Session {
+                let session = Session {
                     src_addr,
                     dst_addr,
                     src_port,
                     dst_port,
                     nat_port,
-                });
-                self.cache.insert(addr_key, session.clone()).await;
-                return Ok(*session);
+                };
+                self.cache.insert(addr_key, session).await;
+                return Ok(session);
             }
 
             let mut assigned_port = 0;
@@ -114,34 +114,34 @@ impl Nat {
             assigned_port
         };
 
-        let session = Arc::new(Session {
+        let session = Session {
             src_addr,
             dst_addr,
             src_port,
             dst_port,
             nat_port,
-        });
+        };
 
-        self.cache.insert(addr_key, session.clone()).await;
+        self.cache.insert(addr_key, session).await;
 
-        Ok(*session)
+        Ok(session)
     }
 
     pub async fn find(&self, nat_port: u16) -> Option<Session> {
         if let Some(addr_key) = self.get_addr_key_by_port_fast(&nat_port).await {
             if let Some(session) = self.cache.get(&addr_key).await {
-                return Some(*session);
+                return Some(session);
             }
 
-            let session = Arc::new(Session {
+            let session = Session {
                 src_addr: addr_key.src_addr,
                 dst_addr: addr_key.dst_addr,
                 src_port: addr_key.src_port,
                 dst_port: addr_key.dst_port,
                 nat_port,
-            });
-            self.cache.insert(addr_key, session.clone()).await;
-            return Some(*session);
+            };
+            self.cache.insert(addr_key, session).await;
+            return Some(session);
         }
 
         None
@@ -167,23 +167,21 @@ impl Nat {
         ttl: Duration,
         mapping: Arc<RwLock<BiMap<SessionKey, u16>>>,
         tx: Option<UnboundedSender<u16>>,
-    ) -> Cache<SessionKey, Arc<Session>> {
+    ) -> Cache<SessionKey, Session> {
         Cache::builder()
             .max_capacity(10000)
             .time_to_idle(ttl)
-            .eviction_listener(
-                move |addr_key: Arc<SessionKey>, session: Arc<Session>, _cause| {
-                    let mapping = mapping.clone();
-                    let tx = tx.clone();
-                    tokio::task::spawn(async move {
-                        let mut mapping_guard = mapping.write().await;
-                        let _ = mapping_guard.remove_by_left(&*addr_key);
-                        if let Some(ref tx) = tx {
-                            let _ = tx.send(session.nat_port);
-                        }
-                    });
-                },
-            )
+            .eviction_listener(move |addr_key: Arc<SessionKey>, session: Session, _cause| {
+                let mapping = mapping.clone();
+                let tx = tx.clone();
+                tokio::task::spawn(async move {
+                    let mut mapping_guard = mapping.write().await;
+                    let _ = mapping_guard.remove_by_left(&*addr_key);
+                    if let Some(ref tx) = tx {
+                        let _ = tx.send(session.nat_port);
+                    }
+                });
+            })
             .build()
     }
 

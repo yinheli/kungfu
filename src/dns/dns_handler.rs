@@ -175,7 +175,7 @@ impl DnsHandler {
         &self,
         domain: &str,
         request_info: &RequestInfo<'_>,
-    ) -> Option<Addr> {
+    ) -> Option<Arc<Addr>> {
         let m = self.runtime.hosts.load().match_domain(domain)?;
 
         if let Ok(ip) = IpAddr::from_str(&m) {
@@ -225,7 +225,7 @@ impl DnsHandler {
         }
     }
 
-    pub(crate) async fn apply_before_rules(&self, domain: &str) -> Option<Addr> {
+    pub(crate) async fn apply_before_rules(&self, domain: &str) -> Option<Arc<Addr>> {
         if self.runtime.rules.find_exclude_domain(domain) {
             return None;
         }
@@ -248,7 +248,11 @@ impl DnsHandler {
         None
     }
 
-    pub(crate) async fn apply_post_rules(&self, domain: &str, ips: Vec<IpAddr>) -> Option<Addr> {
+    pub(crate) async fn apply_post_rules(
+        &self,
+        domain: &str,
+        ips: Vec<IpAddr>,
+    ) -> Option<Arc<Addr>> {
         for ip in ips {
             if let Some(matched) = self.runtime.rules.find_dns_cidr_rule(&ip) {
                 let remark = format!(

@@ -87,7 +87,7 @@ impl DnsTable {
         }
     }
 
-    pub async fn apply(&self, domain: &str, target: &str, remark: &str) -> Addr {
+    pub async fn apply(&self, domain: &str, target: &str, remark: &str) -> Arc<Addr> {
         let ip = self.allocate_addr();
         let addr = Arc::new(Addr::new(domain, Some(ip), target, remark));
 
@@ -97,10 +97,10 @@ impl DnsTable {
         let mut mapping = self.mapping.write().await;
         mapping.insert(domain_owned, ip);
 
-        (*addr).clone()
+        addr
     }
 
-    pub async fn find_by_ip(&self, ip: &IpAddr) -> Option<Addr> {
+    pub async fn find_by_ip(&self, ip: &IpAddr) -> Option<Arc<Addr>> {
         let domain = {
             let mapping = self.mapping.read().await;
             mapping.get_by_right(ip).cloned()
@@ -108,7 +108,7 @@ impl DnsTable {
 
         if let Some(domain) = domain {
             if let Some(addr) = self.cache.get(&domain) {
-                return Some((*addr).clone());
+                return Some(addr);
             }
             let mut mapping = self.mapping.write().await;
             mapping.remove_by_right(ip);
@@ -116,9 +116,9 @@ impl DnsTable {
         None
     }
 
-    pub async fn find_by_domain(&self, domain: &str) -> Option<Option<Addr>> {
+    pub async fn find_by_domain(&self, domain: &str) -> Option<Option<Arc<Addr>>> {
         if let Some(addr) = self.cache.get(domain) {
-            return Some(Some((*addr).clone()));
+            return Some(Some(addr));
         }
 
         let has_mapping = {
@@ -134,7 +134,7 @@ impl DnsTable {
         None
     }
 
-    pub async fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Addr {
+    pub async fn allocate(&self, domain: &str, ip: Option<IpAddr>, remark: &str) -> Arc<Addr> {
         let addr = Arc::new(Addr::new(domain, ip, "", remark));
 
         let domain_owned = domain.to_string();
@@ -145,7 +145,7 @@ impl DnsTable {
             mapping.insert(domain_owned, ip_addr);
         }
 
-        (*addr).clone()
+        addr
     }
 
     pub async fn clear(&self) {
