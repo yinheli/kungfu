@@ -1,14 +1,12 @@
 use hickory_server::{
-    authority::{
-        AuthLookup, AuthorityObject, LookupControlFlow, LookupError, LookupObject, LookupOptions,
-        LookupRecords,
-    },
     proto::{
         op::ResponseCode,
-        rr::{LowerName, RData, RecordSet, RecordType, rdata::PTR},
+        rr::{LowerName, Name, RData, RecordSet, RecordType, rdata::PTR},
     },
-    resolver::Name,
-    server::RequestInfo,
+    server::{Request, RequestInfo},
+    zone_handler::{
+        AuthLookup, LookupControlFlow, LookupError, LookupOptions, LookupRecords, ZoneHandler,
+    },
 };
 use log::{debug, error};
 use prometheus::{IntCounter, register_int_counter};
@@ -25,11 +23,11 @@ use crate::runtime::ArcRuntime;
 
 pub(crate) struct DnsHandler {
     runtime: ArcRuntime,
-    upstream: Arc<dyn AuthorityObject>,
+    upstream: Arc<dyn ZoneHandler>,
 }
 
 impl DnsHandler {
-    pub(crate) fn new(runtime: ArcRuntime, upstream: Arc<dyn AuthorityObject>) -> Self {
+    pub(crate) fn new(runtime: ArcRuntime, upstream: Arc<dyn ZoneHandler>) -> Self {
         Self { runtime, upstream }
     }
 
@@ -64,9 +62,13 @@ impl DnsHandler {
 
     pub(crate) async fn handle(
         &self,
-        request_info: RequestInfo<'_>,
+        request: &Request,
         lookup_options: LookupOptions,
-    ) -> Result<Box<dyn LookupObject>, LookupError> {
+    ) -> Result<AuthLookup, LookupError> {
+        let request_info = request
+            .request_info()
+            .map_err(|_| LookupError::ResponseCode(ResponseCode::FormErr))?;
+
         let query = request_info.query;
         let should_handle = query.query_type() == RecordType::A;
 
@@ -85,7 +87,6 @@ impl DnsHandler {
             return Err(LookupError::ResponseCode(ResponseCode::BADNAME));
         }
 
-        // metrics
         if self.runtime.setting.metrics.is_some() {
             lazy_static! {
                 static ref DNS_QUERY: IntCounter =
@@ -104,7 +105,7 @@ impl DnsHandler {
                 records.add_rdata(RData::PTR(PTR(name)));
                 let answers = LookupRecords::new(Default::default(), Arc::new(records));
                 let result = AuthLookup::answers(answers, None);
-                return Ok(Box::new(result));
+                return Ok(result);
             }
         }
 
@@ -114,19 +115,19 @@ impl DnsHandler {
             let addr = self.runtime.dns_table.find_by_domain(domain).await;
             match addr {
                 Some(Some(v)) => {
-                    return Ok(Box::new(v));
+                    return Ok(v.to_auth_lookup());
                 }
                 None => {
                     debug!("query src: {:?}, domain: {}", request_info.src.ip(), domain);
 
                     matching_rules = true;
 
-                    if let Some(v) = self.handle_hosts(domain).await {
-                        return Ok(Box::new(v));
+                    if let Some(v) = self.handle_hosts(domain, &request_info).await {
+                        return Ok(v.to_auth_lookup());
                     }
 
                     if let Some(v) = self.apply_before_rules(domain).await {
-                        return Ok(Box::new(v));
+                        return Ok(v.to_auth_lookup());
                     }
                 }
                 _ => {}
@@ -135,33 +136,34 @@ impl DnsHandler {
 
         let search_result = timeout(
             Duration::from_secs(2),
-            self.upstream.search(request_info, lookup_options),
+            self.upstream.search(request, lookup_options),
         )
         .await
         .map_err(|_| LookupError::ResponseCode(ResponseCode::ServFail))?;
 
-        let result = match search_result {
-            LookupControlFlow::Continue(lookup) => lookup,
-            LookupControlFlow::Break(lookup) => lookup,
+        let (flow, _tsig) = search_result;
+        let result = match flow {
+            LookupControlFlow::Continue(r) => r,
+            LookupControlFlow::Break(r) => r,
             LookupControlFlow::Skip => Err(LookupError::ResponseCode(ResponseCode::ServFail)),
         };
 
         if should_handle && matching_rules {
             match result {
-                Ok(r) => {
+                Ok(ref r) => {
                     let ips: Vec<IpAddr> = r
                         .iter()
-                        .filter_map(|record| match record.data() {
+                        .filter_map(|record| match &record.data {
                             RData::A(v) => Some(IpAddr::V4(**v)),
                             _ => None,
                         })
                         .collect();
 
                     if let Some(v) = self.apply_post_rules(domain, ips).await {
-                        return Ok(Box::new(v));
+                        return Ok(v.to_auth_lookup());
                     }
 
-                    return Ok(r);
+                    return result;
                 }
                 _ => return result,
             }
@@ -169,7 +171,11 @@ impl DnsHandler {
         result
     }
 
-    pub(crate) async fn handle_hosts(&self, domain: &str) -> Option<Addr> {
+    pub(crate) async fn handle_hosts(
+        &self,
+        domain: &str,
+        request_info: &RequestInfo<'_>,
+    ) -> Option<Addr> {
         let m = self.runtime.hosts.load().match_domain(domain)?;
 
         if let Ok(ip) = IpAddr::from_str(&m) {
@@ -192,15 +198,15 @@ impl DnsHandler {
             .lookup(
                 &LowerName::new(&name.unwrap()),
                 RecordType::A,
+                Some(request_info),
                 LookupOptions::default(),
             )
             .await;
 
         match r {
-            LookupControlFlow::Continue(Ok(v)) => {
+            LookupControlFlow::Continue(Ok(v)) | LookupControlFlow::Break(Ok(v)) => {
                 for record in v.iter() {
-                    let data = record.data();
-                    if let Some(a_record) = data.as_a() {
+                    if let RData::A(a_record) = &record.data {
                         return Some(
                             self.runtime
                                 .dns_table
@@ -211,25 +217,7 @@ impl DnsHandler {
                 }
                 None
             }
-            LookupControlFlow::Continue(Err(e)) => {
-                error!("{:?}", e);
-                None
-            }
-            LookupControlFlow::Break(Ok(v)) => {
-                for record in v.iter() {
-                    let data = record.data();
-                    if let Some(a_record) = data.as_a() {
-                        return Some(
-                            self.runtime
-                                .dns_table
-                                .allocate(domain, Some(IpAddr::V4(**a_record)), "host")
-                                .await,
-                        );
-                    }
-                }
-                None
-            }
-            LookupControlFlow::Break(Err(e)) => {
+            LookupControlFlow::Continue(Err(e)) | LookupControlFlow::Break(Err(e)) => {
                 error!("{:?}", e);
                 None
             }
@@ -238,12 +226,10 @@ impl DnsHandler {
     }
 
     pub(crate) async fn apply_before_rules(&self, domain: &str) -> Option<Addr> {
-        // Check exclude rules first
         if self.runtime.rules.find_exclude_domain(domain) {
             return None;
         }
 
-        // Find domain-based rule
         if let Some(matched) = self.runtime.rules.find_domain_rule(domain) {
             let remark = format!(
                 "rule:{:?}, value:{}, target:{}",

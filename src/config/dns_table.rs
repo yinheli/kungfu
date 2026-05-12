@@ -1,11 +1,7 @@
 use bimap::BiMap;
-use hickory_server::{
-    authority::LookupObject,
-    proto::rr::{
-        RData, Record,
-        rdata::{A, AAAA, TXT},
-    },
-    resolver::Name,
+use hickory_server::proto::rr::{
+    Name, RData, Record,
+    rdata::{A, AAAA, TXT},
 };
 use ipnet::IpNet;
 use moka::sync::Cache;
@@ -74,11 +70,9 @@ impl DnsTable {
             .eviction_listener({
                 let mapping = Arc::clone(&mapping);
                 move |domain: Arc<String>, _addr: Arc<Addr>, _cause| {
-                    // Use try_write for eviction listener to avoid blocking
                     if let Ok(mut mapping_guard) = mapping.try_write() {
                         mapping_guard.remove_by_left(&*domain);
                     }
-                    // If lock is busy, stale entry will be cleaned up on next access
                 }
             })
             .build();
@@ -116,7 +110,6 @@ impl DnsTable {
             if let Some(addr) = self.cache.get(&domain) {
                 return Some((*addr).clone());
             }
-            // Remove stale entry from mapping
             let mut mapping = self.mapping.write().await;
             mapping.remove_by_right(ip);
         }
@@ -134,7 +127,6 @@ impl DnsTable {
         };
 
         if has_mapping {
-            // Remove stale entry from mapping
             let mut mapping = self.mapping.write().await;
             mapping.remove_by_left(domain);
         }
@@ -159,7 +151,6 @@ impl DnsTable {
     pub async fn clear(&self) {
         self.cache.invalidate_all();
 
-        // Clear the mapping atomically
         let mut mapping = self.mapping.write().await;
         mapping.clear();
     }
@@ -225,19 +216,16 @@ impl Addr {
             records,
         }
     }
-}
 
-impl LookupObject for Addr {
-    fn is_empty(&self) -> bool {
-        self.records.is_empty()
-    }
+    pub fn to_auth_lookup(&self) -> hickory_server::zone_handler::AuthLookup {
+        use hickory_server::zone_handler::{AuthLookup, LookupRecords};
 
-    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a Record> + Send + 'a> {
-        Box::new(self.records.iter())
-    }
+        if self.records.is_empty() {
+            return AuthLookup::default();
+        }
 
-    fn take_additionals(&mut self) -> Option<Box<dyn LookupObject>> {
-        None
+        let records = LookupRecords::Section(self.records.clone());
+        AuthLookup::answers(records, None)
     }
 }
 
@@ -352,7 +340,6 @@ mod tests {
         table.cache.invalidate("test.com");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Verify mapping is also cleared (proves cache and mapping share the same Arc)
         assert!(table.find_by_ip(&ip).await.is_none());
     }
 
