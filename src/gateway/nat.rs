@@ -20,7 +20,7 @@ pub struct SessionKey {
     pub dst_port: u16,
 }
 
-const EPHEMERAL_PORT_START: u16 = 49152;
+const EPHEMERAL_PORT_START: u16 = 1024;
 const EPHEMERAL_PORT_END: u16 = 65535;
 const EPHEMERAL_PORT_RANGE: u16 = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
 
