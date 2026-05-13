@@ -1,4 +1,5 @@
 use bimap::BiMap;
+use parking_lot::RwLock;
 use std::{
     io::{Error, ErrorKind},
     net::Ipv4Addr,
@@ -8,7 +9,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{RwLock, mpsc::UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
 use moka::future::Cache;
 
@@ -80,38 +81,30 @@ impl Nat {
         }
 
         let nat_port = {
-            let mut mapping = self.mapping.write().await;
+            let mut mapping = self.mapping.write();
 
             if let Some(&nat_port) = mapping.get_by_left(&addr_key) {
-                let session = Session {
-                    src_addr,
-                    dst_addr,
-                    src_port,
-                    dst_port,
-                    nat_port,
-                };
-                self.cache.insert(addr_key, session).await;
-                return Ok(session);
-            }
-
-            let mut assigned_port = 0;
-            for _ in 0..EPHEMERAL_PORT_RANGE {
-                let port = self.next_ephemeral_port();
-                if !mapping.contains_right(&port) {
-                    assigned_port = port;
-                    break;
+                nat_port
+            } else {
+                let mut assigned_port = 0;
+                for _ in 0..EPHEMERAL_PORT_RANGE {
+                    let port = self.next_ephemeral_port();
+                    if !mapping.contains_right(&port) {
+                        assigned_port = port;
+                        break;
+                    }
                 }
-            }
 
-            if assigned_port == 0 {
-                return Err(Error::new(
-                    ErrorKind::AddrInUse,
-                    "No available NAT port: ephemeral range exhausted",
-                ));
-            }
+                if assigned_port == 0 {
+                    return Err(Error::new(
+                        ErrorKind::AddrInUse,
+                        "No available NAT port: ephemeral range exhausted",
+                    ));
+                }
 
-            mapping.insert(addr_key, assigned_port);
-            assigned_port
+                mapping.insert(addr_key, assigned_port);
+                assigned_port
+            }
         };
 
         let session = Session {
@@ -128,7 +121,7 @@ impl Nat {
     }
 
     pub async fn find(&self, nat_port: u16) -> Option<Session> {
-        if let Some(addr_key) = self.get_addr_key_by_port_fast(&nat_port).await {
+        if let Some(addr_key) = self.get_addr_key_by_port_fast(&nat_port) {
             if let Some(session) = self.cache.get(&addr_key).await {
                 return Some(session);
             }
@@ -152,14 +145,14 @@ impl Nat {
         self.cache.invalidate_all();
 
         {
-            let mut mapping = self.mapping.write().await;
+            let mut mapping = self.mapping.write();
             mapping.clear();
         }
     }
 
     #[allow(dead_code)]
     pub async fn stats(&self) -> (usize, usize) {
-        let mapping_count = self.mapping.read().await.len();
+        let mapping_count = self.mapping.read().len();
         (mapping_count, self.cache.entry_count() as usize)
     }
 
@@ -172,21 +165,17 @@ impl Nat {
             .max_capacity(10000)
             .time_to_idle(ttl)
             .eviction_listener(move |addr_key: Arc<SessionKey>, session: Session, _cause| {
-                let mapping = mapping.clone();
-                let tx = tx.clone();
-                tokio::task::spawn(async move {
-                    let mut mapping_guard = mapping.write().await;
-                    let _ = mapping_guard.remove_by_left(&*addr_key);
-                    if let Some(ref tx) = tx {
-                        let _ = tx.send(session.nat_port);
-                    }
-                });
+                let mut mapping_guard = mapping.write();
+                let _ = mapping_guard.remove_by_left(&*addr_key);
+                if let Some(ref tx) = tx {
+                    let _ = tx.send(session.nat_port);
+                }
             })
             .build()
     }
 
-    async fn get_addr_key_by_port_fast(&self, nat_port: &u16) -> Option<SessionKey> {
-        let mapping = self.mapping.read().await;
+    fn get_addr_key_by_port_fast(&self, nat_port: &u16) -> Option<SessionKey> {
+        let mapping = self.mapping.read();
         mapping.get_by_right(nat_port).copied()
     }
 

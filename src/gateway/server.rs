@@ -213,8 +213,8 @@ impl Gateway {
         let src = v4.get_source();
         let dst = v4.get_destination();
 
-        let mut payload_vec = v4.payload().to_vec();
-        let mut packet = MutableIcmpPacket::new(&mut payload_vec).unwrap();
+        let mut payload = v4.payload().to_vec();
+        let mut packet = MutableIcmpPacket::new(&mut payload).unwrap();
         let icmp_type = packet.get_icmp_type();
 
         // Handle ICMP packet
@@ -227,9 +227,9 @@ impl Gateway {
                 packet.set_checksum(icmp::checksum(&packet.to_immutable()));
 
                 v4.set_destination(src);
-                v4.set_source(dst); // Respond as if we are the target
+                v4.set_source(dst);
                 v4.set_ttl(64);
-                v4.set_payload(&payload_vec);
+                v4.set_payload(&payload);
                 v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
                 let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));

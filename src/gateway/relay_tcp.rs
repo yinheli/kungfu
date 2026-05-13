@@ -98,7 +98,7 @@ async fn handle_connection(
     let outbound = timeout(
         PROXY_CONNECT_TIMEOUT,
         open_proxy(
-            common::random_proxy(&proxy_config.values),
+            common::random_proxy(proxy_config.parsed_values()),
             &target_addr,
             target_port,
         ),

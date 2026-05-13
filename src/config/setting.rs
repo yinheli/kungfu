@@ -1,4 +1,6 @@
 use serde::Deserialize;
+use std::sync::OnceLock;
+use url::Url;
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -24,8 +26,44 @@ impl Default for Setting {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ParsedProxyUrl {
+    pub addr: String,
+    pub has_auth: bool,
+    pub username: String,
+    pub password: Option<String>,
+}
+
+impl ParsedProxyUrl {
+    pub fn parse(url: &str) -> Result<Self, url::ParseError> {
+        let url = Url::parse(url)?;
+        let host = url.host_str().unwrap_or("");
+        let port = url.port().unwrap_or(1080);
+        let username = url.username();
+        Ok(Self {
+            addr: format!("{host}:{port}"),
+            has_auth: !username.is_empty(),
+            username: username.to_string(),
+            password: url.password().map(|s| s.to_string()),
+        })
+    }
+}
+
 #[derive(Default, Debug, Deserialize)]
 pub struct Proxy {
     pub name: String,
     pub values: Vec<String>,
+    #[serde(skip)]
+    parsed: OnceLock<Vec<ParsedProxyUrl>>,
+}
+
+impl Proxy {
+    pub fn parsed_values(&self) -> &[ParsedProxyUrl] {
+        self.parsed.get_or_init(|| {
+            self.values
+                .iter()
+                .filter_map(|url| ParsedProxyUrl::parse(url).ok())
+                .collect()
+        })
+    }
 }
