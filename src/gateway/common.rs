@@ -18,7 +18,7 @@ pub fn random_proxy(proxy: &[String]) -> String {
 /// Find target proxy and address for a session
 pub async fn find_target(runtime: ArcRuntime, session: Session) -> Option<(String, String, u16)> {
     if let Some(addr) = runtime.dns_table.find_by_ip(&session.dst_addr.into()).await {
-        return Some((addr.target, addr.domain, session.dst_port));
+        return Some((addr.target.clone(), addr.domain.clone(), session.dst_port));
     }
 
     if let Some(matched) = runtime.rules.find_route_rule(&IpAddr::V4(session.dst_addr)) {

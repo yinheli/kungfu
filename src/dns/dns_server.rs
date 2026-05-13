@@ -1,18 +1,19 @@
 use anyhow::Error;
-use hickory_server::proto::rr::LowerName;
+use hickory_server::net::runtime::Time;
+use hickory_server::proto::op::ResponseCode;
+use hickory_server::proto::rr::TSigResponseContext;
+use hickory_server::proto::rr::{LowerName, Name};
+use hickory_server::resolver::config::{
+    ConnectionConfig, NameServerConfig, ProtocolConfig, ResolveHosts, ResolverOpts,
+};
+use hickory_server::server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo};
+use hickory_server::store::forwarder::{ForwardConfig, ForwardZoneHandler};
 use hickory_server::{
-    ServerFuture,
-    authority::{
-        AuthorityObject, Catalog, LookupControlFlow, LookupError, LookupObject, LookupOptions,
-        MessageRequest, UpdateResult, ZoneType,
+    Server,
+    zone_handler::{
+        AuthLookup, AxfrPolicy, Catalog, LookupControlFlow, LookupError, LookupOptions,
+        ZoneHandler, ZoneType,
     },
-    proto::{op::ResponseCode, rr::RecordType},
-    resolver::{
-        Name,
-        config::{NameServerConfigGroup, ResolveHosts, ResolverOpts},
-    },
-    server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo},
-    store::forwarder::{ForwardAuthority, ForwardConfig},
 };
 use std::net::ToSocketAddrs;
 use std::{sync::Arc, time::Duration};
@@ -24,8 +25,16 @@ use tokio::{
 use super::dns_handler::DnsHandler;
 use crate::runtime::ArcRuntime;
 
-pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<ServerFuture<Handler>, Error> {
-    let mut name_servers = NameServerConfigGroup::with_capacity(runtime.setting.dns_upstream.len());
+fn make_connection_configs(port: u16) -> Vec<ConnectionConfig> {
+    let mut udp = ConnectionConfig::new(ProtocolConfig::Udp);
+    udp.port = port;
+    let mut tcp = ConnectionConfig::new(ProtocolConfig::Tcp);
+    tcp.port = port;
+    vec![udp, tcp]
+}
+
+pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<Server<Handler>, Error> {
+    let mut name_servers = Vec::new();
     for upstream in runtime.setting.dns_upstream.iter() {
         let mut upstream = upstream.clone();
         if !upstream.contains(':') {
@@ -34,19 +43,16 @@ pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<ServerFuture
 
         if let Ok(addrs) = &upstream[..].to_socket_addrs() {
             addrs.clone().for_each(|addr| {
-                let name_server =
-                    NameServerConfigGroup::from_ips_clear(&[addr.ip()], addr.port(), true);
-                name_servers.merge(name_server);
+                let mut ns = NameServerConfig::udp_and_tcp(addr.ip());
+                ns.connections = make_connection_configs(addr.port());
+                name_servers.push(ns);
             });
         }
     }
 
-    // optimize for forward / upstream
     let mut opts = ResolverOpts::default();
     opts.attempts = 1;
-    opts.check_names = false;
     opts.use_hosts_file = ResolveHosts::Never;
-    opts.validate = false;
     opts.num_concurrent_reqs = 2;
     opts.try_tcp_on_error = false;
     opts.edns0 = true;
@@ -59,18 +65,18 @@ pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<ServerFuture
         options: Some(opts),
     };
 
-    let upstream = ForwardAuthority::builder_tokio(forward_config)
+    let upstream = ForwardZoneHandler::builder_tokio(forward_config)
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build forward authority: {}", e))?;
 
-    let upstream = Arc::new(upstream);
+    let upstream: Arc<dyn ZoneHandler> = Arc::new(upstream);
     let handler = DnsHandler::new(runtime.clone(), upstream.clone());
     let authority = HijackAuthority::new(upstream.clone(), handler);
 
     let mut catalog = Catalog::new();
     catalog.upsert(LowerName::from(Name::root()), vec![Arc::new(authority)]);
 
-    let mut server = ServerFuture::new(Handler { catalog });
+    let mut server = Server::new(Handler { catalog });
     log::info!("dns listen port: {}", runtime.setting.dns_port);
     server.register_socket(
         UdpSocket::bind(format!(
@@ -86,30 +92,31 @@ pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<ServerFuture
         ))
         .await?,
         Duration::from_secs(5),
+        1024,
     );
 
     Ok(server)
 }
 
 struct HijackAuthority {
-    upstream: Arc<dyn AuthorityObject>,
+    upstream: Arc<dyn ZoneHandler>,
     handler: DnsHandler,
 }
 
 impl HijackAuthority {
-    fn new(upstream: Arc<dyn AuthorityObject>, handler: DnsHandler) -> Self {
+    fn new(upstream: Arc<dyn ZoneHandler>, handler: DnsHandler) -> Self {
         Self { upstream, handler }
     }
 }
 
 #[async_trait::async_trait]
-impl AuthorityObject for HijackAuthority {
+impl ZoneHandler for HijackAuthority {
     fn zone_type(&self) -> ZoneType {
         self.upstream.zone_type()
     }
 
-    fn is_axfr_allowed(&self) -> bool {
-        self.upstream.is_axfr_allowed()
+    fn axfr_policy(&self) -> AxfrPolicy {
+        self.upstream.axfr_policy()
     }
 
     fn can_validate_dnssec(&self) -> bool {
@@ -120,52 +127,61 @@ impl AuthorityObject for HijackAuthority {
         self.upstream.origin()
     }
 
-    async fn update(&self, update: &MessageRequest) -> UpdateResult<bool> {
-        self.upstream.update(update).await
+    async fn update(
+        &self,
+        update: &Request,
+        now: u64,
+    ) -> (Result<bool, ResponseCode>, Option<TSigResponseContext>) {
+        self.upstream.update(update, now).await
     }
 
     async fn lookup(
         &self,
         name: &LowerName,
-        rtype: RecordType,
+        rtype: hickory_server::proto::rr::RecordType,
+        request_info: Option<&RequestInfo<'_>>,
         lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Box<dyn LookupObject>> {
-        self.upstream.lookup(name, rtype, lookup_options).await
+    ) -> LookupControlFlow<AuthLookup> {
+        self.upstream
+            .lookup(name, rtype, request_info, lookup_options)
+            .await
     }
 
     async fn search(
         &self,
-        request_info: RequestInfo<'_>,
+        request: &Request,
         lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Box<dyn LookupObject>> {
-        let future = self.handler.handle(request_info, lookup_options);
+    ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
+        let future = self.handler.handle(request, lookup_options);
 
         match time::timeout(Duration::from_millis(2000), future).await {
-            Ok(Ok(r)) => LookupControlFlow::Continue(Ok(r)),
-            Ok(Err(e)) => LookupControlFlow::Break(Err(e)),
-            Err(_) => {
-                LookupControlFlow::Break(Err(LookupError::ResponseCode(ResponseCode::ServFail)))
-            }
+            Ok(Ok(r)) => (LookupControlFlow::Continue(Ok(r)), None),
+            Ok(Err(e)) => (LookupControlFlow::Break(Err(e)), None),
+            Err(_) => (
+                LookupControlFlow::Break(Err(LookupError::ResponseCode(ResponseCode::ServFail))),
+                None,
+            ),
         }
     }
 
-    async fn get_nsec_records(
+    async fn nsec_records(
         &self,
         name: &LowerName,
         lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Box<dyn LookupObject>> {
-        self.upstream.get_nsec_records(name, lookup_options).await
+    ) -> LookupControlFlow<AuthLookup> {
+        self.upstream.nsec_records(name, lookup_options).await
     }
 
     async fn consult(
         &self,
         name: &LowerName,
-        rtype: RecordType,
+        rtype: hickory_server::proto::rr::RecordType,
+        request_info: Option<&RequestInfo<'_>>,
         lookup_options: LookupOptions,
-        lookup: LookupControlFlow<Box<dyn LookupObject>>,
-    ) -> LookupControlFlow<Box<dyn LookupObject>> {
+        last_result: LookupControlFlow<AuthLookup>,
+    ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
         self.upstream
-            .consult(name, rtype, lookup_options, lookup)
+            .consult(name, rtype, request_info, lookup_options, last_result)
             .await
     }
 }
@@ -176,11 +192,14 @@ pub struct Handler {
 
 #[async_trait::async_trait]
 impl RequestHandler for Handler {
-    async fn handle_request<R: ResponseHandler>(
+    async fn handle_request<R: ResponseHandler, T: Time>(
         &self,
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
-        self.catalog.lookup(request, None, response_handle).await
+        let now = T::current_time();
+        self.catalog
+            .lookup(request, None, now, response_handle)
+            .await
     }
 }
