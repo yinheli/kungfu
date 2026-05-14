@@ -18,13 +18,13 @@ use tokio::{
     sync::{Mutex, Notify, mpsc::UnboundedReceiver},
     time::timeout,
 };
-use url::Url;
 
 use super::{common, nat::Session};
-use crate::{gateway::stats, runtime::ArcRuntime};
+use crate::{config::setting::ParsedProxyUrl, gateway::stats, runtime::ArcRuntime};
 
 const UDP_BUFFER_SIZE: usize = 4096;
 const UDP_ASSOCIATE_TIMEOUT: Duration = Duration::from_secs(5);
+const UDP_ASSOCIATION_MAX_CAPACITY: u64 = 10000;
 const UDP_ASSOCIATION_TTL: Duration = Duration::from_secs(300);
 const SOCKS5_UDP_HEADER_MIN: usize = 10;
 
@@ -53,19 +53,14 @@ struct UdpAssociation {
 }
 
 impl UdpAssociation {
-    async fn new(proxy_url: &str, nat_port: u16) -> Result<Self> {
-        let url = Url::parse(proxy_url)?;
-        let host = url.host().ok_or_else(|| anyhow!("missing host"))?;
-        let port = url.port().unwrap_or(1080);
+    async fn new(proxy: &ParsedProxyUrl, nat_port: u16) -> Result<Self> {
+        let mut tcp_control = TcpStream::connect(&proxy.addr).await?;
 
-        let proxy_addr = format!("{}:{}", host, port);
-        let mut tcp_control = TcpStream::connect(&proxy_addr).await?;
-
-        if url.username() != "" {
+        if proxy.has_auth {
             Self::perform_auth(
                 &mut tcp_control,
-                url.username(),
-                url.password().unwrap_or(""),
+                &proxy.username,
+                proxy.password.as_deref().unwrap_or(""),
             )
             .await?;
         } else {
@@ -320,10 +315,15 @@ pub(crate) struct UdpRelay {
 
 impl UdpRelay {
     pub fn new(runtime: ArcRuntime, mut rx: UnboundedReceiver<u16>) -> Self {
-        let associations: Cache<u16, Arc<UdpAssociation>> =
-            Cache::builder().time_to_idle(UDP_ASSOCIATION_TTL).build();
+        let associations: Cache<u16, Arc<UdpAssociation>> = Cache::builder()
+            .max_capacity(UDP_ASSOCIATION_MAX_CAPACITY)
+            .time_to_idle(UDP_ASSOCIATION_TTL)
+            .build();
 
         let invalidates = associations.clone();
+        // Cleanup path 1: NAT eviction signals via this channel.
+        // Cleanup path 2: recv loop idle timeout in get_or_create_association.
+        // Both paths are idempotent (deactivate + invalidate are safe to call twice).
         tokio::spawn(async move {
             while let Some(nat_port) = rx.recv().await {
                 if let Some(assoc) = invalidates.get(&nat_port) {
@@ -382,13 +382,9 @@ impl UdpRelay {
             .find(|p| p.name == proxy_name)
             .ok_or_else(|| anyhow!("Proxy not found: {}", proxy_name))?;
 
-        let proxy_url = common::random_proxy(&proxy_config.values);
+        let proxy = common::random_proxy(proxy_config.parsed_values());
 
-        let result = timeout(
-            UDP_ASSOCIATE_TIMEOUT,
-            UdpAssociation::new(&proxy_url, nat_port),
-        )
-        .await;
+        let result = timeout(UDP_ASSOCIATE_TIMEOUT, UdpAssociation::new(proxy, nat_port)).await;
 
         let assoc = match result {
             Ok(Ok(assoc)) => assoc,
@@ -412,7 +408,7 @@ impl UdpRelay {
         let target_host = target_host.to_string();
         let associations_cache = self.associations.clone();
         tokio::spawn(async move {
-            while let Ok(Some(data)) = assoc_clone.recv().await {
+            while let Ok(Ok(Some(data))) = timeout(UDP_ASSOCIATION_TTL, assoc_clone.recv()).await {
                 if let Ok((_src_addr, _src_port, data)) = UdpAssociation::decode_socks5_udp(&data) {
                     let down = data.len() as u64;
                     callback(data).await;
@@ -426,6 +422,7 @@ impl UdpRelay {
                     );
                 }
             }
+            assoc_clone.deactivate();
             log::debug!(
                 "UDP receive loop ended for proxy {} (nat_port: {}), invalidating association",
                 proxy_name,

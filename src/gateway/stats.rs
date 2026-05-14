@@ -70,12 +70,14 @@ pub fn update_metrics(
         .with_label_values(&[protocol_str, "download", proxy])
         .inc_by(down);
 
-    RELAY_HOST_COUNT
-        .with_label_values(&[protocol_str, "upload", domain])
-        .inc_by(up);
-    RELAY_HOST_COUNT
-        .with_label_values(&[protocol_str, "download", domain])
-        .inc_by(down);
-
     RELAY_COUNT_CACHE.insert(domain.to_string(), 0);
+
+    if RELAY_COUNT_CACHE.get(domain).is_some() {
+        RELAY_HOST_COUNT
+            .with_label_values(&[protocol_str, "upload", domain])
+            .inc_by(up);
+        RELAY_HOST_COUNT
+            .with_label_values(&[protocol_str, "download", domain])
+            .inc_by(down);
+    }
 }

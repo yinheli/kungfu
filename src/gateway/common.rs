@@ -1,21 +1,17 @@
 use super::nat::Session;
+use crate::config::setting::ParsedProxyUrl;
 use crate::runtime::ArcRuntime;
 use rand::prelude::*;
 use std::net::IpAddr;
 
-/// Randomly select a proxy URL from the list
-pub fn random_proxy(proxy: &[String]) -> String {
-    if proxy.len() == 1 {
-        return proxy[0].clone();
+pub fn random_proxy(proxies: &[ParsedProxyUrl]) -> &ParsedProxyUrl {
+    if proxies.len() == 1 {
+        return &proxies[0];
     }
     let mut rng = rand::rng();
-    proxy
-        .choose(&mut rng)
-        .cloned()
-        .unwrap_or_else(|| proxy[0].clone())
+    proxies.choose(&mut rng).unwrap_or(&proxies[0])
 }
 
-/// Find target proxy and address for a session
 pub async fn find_target(runtime: ArcRuntime, session: Session) -> Option<(String, String, u16)> {
     if let Some(addr) = runtime.dns_table.find_by_ip(&session.dst_addr.into()).await {
         return Some((addr.target.clone(), addr.domain.clone(), session.dst_port));

@@ -5,6 +5,7 @@ use hickory_server::proto::rr::{
 };
 use ipnet::IpNet;
 use moka::sync::Cache;
+use parking_lot::RwLock;
 use std::{
     fmt::{Display, Formatter},
     net::IpAddr,
@@ -15,7 +16,6 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::RwLock;
 
 #[derive(Debug)]
 pub struct DnsTable {
@@ -70,9 +70,8 @@ impl DnsTable {
             .eviction_listener({
                 let mapping = Arc::clone(&mapping);
                 move |domain: Arc<String>, _addr: Arc<Addr>, _cause| {
-                    if let Ok(mut mapping_guard) = mapping.try_write() {
-                        mapping_guard.remove_by_left(&*domain);
-                    }
+                    let mut mapping_guard = mapping.write();
+                    mapping_guard.remove_by_left(&*domain);
                 }
             })
             .build();
@@ -94,7 +93,7 @@ impl DnsTable {
         let domain_owned = domain.to_string();
         self.cache.insert(domain_owned.clone(), addr.clone());
 
-        let mut mapping = self.mapping.write().await;
+        let mut mapping = self.mapping.write();
         mapping.insert(domain_owned, ip);
 
         addr
@@ -102,7 +101,7 @@ impl DnsTable {
 
     pub async fn find_by_ip(&self, ip: &IpAddr) -> Option<Arc<Addr>> {
         let domain = {
-            let mapping = self.mapping.read().await;
+            let mapping = self.mapping.read();
             mapping.get_by_right(ip).cloned()
         };
 
@@ -110,7 +109,7 @@ impl DnsTable {
             if let Some(addr) = self.cache.get(&domain) {
                 return Some(addr);
             }
-            let mut mapping = self.mapping.write().await;
+            let mut mapping = self.mapping.write();
             mapping.remove_by_right(ip);
         }
         None
@@ -122,12 +121,12 @@ impl DnsTable {
         }
 
         let has_mapping = {
-            let mapping = self.mapping.read().await;
+            let mapping = self.mapping.read();
             mapping.contains_left(domain)
         };
 
         if has_mapping {
-            let mut mapping = self.mapping.write().await;
+            let mut mapping = self.mapping.write();
             mapping.remove_by_left(domain);
         }
 
@@ -141,7 +140,7 @@ impl DnsTable {
         self.cache.insert(domain_owned.clone(), addr.clone());
 
         if let Some(ip_addr) = ip {
-            let mut mapping = self.mapping.write().await;
+            let mut mapping = self.mapping.write();
             mapping.insert(domain_owned, ip_addr);
         }
 
@@ -151,7 +150,7 @@ impl DnsTable {
     pub async fn clear(&self) {
         self.cache.invalidate_all();
 
-        let mut mapping = self.mapping.write().await;
+        let mut mapping = self.mapping.write();
         mapping.clear();
     }
 

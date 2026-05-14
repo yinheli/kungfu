@@ -16,7 +16,7 @@ kungfu is a flexible DNS hijacking and proxy tool written in Rust. It provides D
 ## Build and Development Commands
 
 ### Requirements
-- **Rust Nightly Toolchain**: This project requires nightly Rust due to the `#![feature(test)]` feature flag
+- **Rust Nightly Toolchain**: This project requires nightly Rust due to the `#![cfg_attr(test, feature(test))]` feature flag
 - Install with: `rustup toolchain install nightly && rustup default nightly`
 
 ### Common Commands
@@ -52,7 +52,7 @@ cargo fmt
 
 ### Cross-compilation
 The project supports multiple targets (see `.github/workflows/build.yml`):
-- Linux: x86_64, aarch64, arm, armv7, i686 (gnu/musl)
+- Linux: x86_64 (gnu/musl), aarch64 (gnu/musl), arm (musl), armv7 (musl), i686 (musl)
 - macOS: x86_64, aarch64
 
 Use `cross` for cross-compilation on Linux targets:
@@ -79,10 +79,11 @@ src/
 ├── cli.rs            # Command-line argument parsing
 ├── logger.rs         # Logging initialization
 ├── metrics.rs        # Prometheus metrics HTTP server
-├── runtime.rs        # Runtime configuration management
+├── runtime/          # Runtime configuration management
+│   └── mod.rs
 ├── config/           # Configuration management
 │   ├── mod.rs
-│   ├── setting.rs    # Core config structures (Setting, Proxy, Rule)
+│   ├── setting.rs    # Core config structures (Setting, Proxy)
 │   ├── load.rs       # Config file loading and hot-reload
 │   ├── dns_table.rs  # IP address allocation for hijacked domains
 │   └── hosts.rs      # Host file parsing with CNAME/glob support
@@ -138,10 +139,8 @@ src/
   - Custom stack size: 256KB per thread
   - Thread name: `kungfu-worker`
 
-- **Rayon Thread Pool**: Parallel processing for rule/pattern matching
-  - Thread count: `max(2, num_cpus)`
-  - Thread name: `kungfu-rayon`
-  - Used in `Rule::match_domain()` and `Rule::match_cidr()` with `.par_iter()`
+- **Rayon**: Parallel processing for rule/pattern matching via default global thread pool
+  - Used in `Rule` match methods and `Hosts::match_domain()` with `.par_iter()`
 
 ## Configuration
 
@@ -217,7 +216,7 @@ cdn.my-app.com.a.bdydns.com.  cdn.my-app.com  # CNAME
 
 ## Performance Considerations
 
-- **Release Profile**: Highly optimized (`opt-level = 3`, LTO, single codegen unit, strip symbols)
+- **Release Profile**: Highly optimized (`opt-level = 3`, fat LTO, single codegen unit, `panic = abort`, strip symbols)
 - **Caching**: Uses `moka` sync cache for DNS table lookups
 - **Parallel Matching**: Rule matching parallelized with Rayon
 - **Target Performance**: >120k QPS (as measured on AMD 5600G)
@@ -232,6 +231,6 @@ Gateway mode requires root/CAP_NET_ADMIN for TUN device creation.
 
 ## Important Notes
 
-- **Nightly Rust Required**: Do not remove `#![feature(test)]` or suggest stable alternatives
+- **Nightly Rust Required**: Do not remove `#![cfg_attr(test, feature(test))]` or suggest stable alternatives
 - **Static Routes Not Hot-Reloadable**: `type: route` rules require service restart
 - **GeoIP Not Implemented**: `dnsGeoIp` rule type is defined but not yet functional

@@ -72,15 +72,14 @@ impl RuleMatcher {
     pub fn match_domain(&self, domain: &str) -> Option<Cow<'_, str>> {
         self.patterns
             .iter()
-            .find(|&v| v.matches(domain))
-            .map(|p| Cow::Owned(p.as_str().to_string()))
+            .position(|v| v.matches(domain))
+            .map(|i| Cow::Borrowed(self.values[i].as_str()))
     }
 
-    /// Match IP address against CIDR ranges (sequential search)
     pub fn match_cidr(&self, ip: &IpAddr) -> Option<Cow<'_, str>> {
         self.cidrs
             .iter()
-            .find(|&v| v.contains(ip))
-            .map(|cidr| Cow::Owned(cidr.to_string()))
+            .position(|v| v.contains(ip))
+            .map(|i| Cow::Borrowed(self.values[i].as_str()))
     }
 }
