@@ -82,7 +82,7 @@ impl Gateway {
 
     async fn serve(&self) {
         let dev = Arc::new(self.setup().await);
-        let (packet_tx, mut packet_rx) = mpsc::channel::<Bytes>(4096);
+        let (packet_tx, mut packet_rx) = mpsc::channel::<BytesMut>(4096);
 
         let write_task = async {
             let dev = dev.clone();
@@ -100,7 +100,7 @@ impl Gateway {
     }
 
     #[cfg(target_os = "linux")]
-    async fn send_packet(&self, dev: &AsyncDevice, packet: &[u8]) {
+    async fn send_packet(&self, dev: &AsyncDevice, packet: &BytesMut) {
         let mut out = BytesMut::with_capacity(VIRTIO_NET_HDR_LEN + packet.len());
         out.extend_from_slice(&[0u8; VIRTIO_NET_HDR_LEN]);
         out.extend_from_slice(packet);
@@ -108,12 +108,12 @@ impl Gateway {
     }
 
     #[cfg(not(target_os = "linux"))]
-    async fn send_packet(&self, dev: &AsyncDevice, packet: &[u8]) {
+    async fn send_packet(&self, dev: &AsyncDevice, packet: &BytesMut) {
         let _ = dev.send(packet).await;
     }
 
     #[cfg(target_os = "linux")]
-    async fn run_packet_loop(&self, dev: Arc<AsyncDevice>, packet_tx: Sender<Bytes>) {
+    async fn run_packet_loop(&self, dev: Arc<AsyncDevice>, packet_tx: Sender<BytesMut>) {
         let mut original_buffer = vec![0u8; VIRTIO_NET_HDR_LEN + 65535];
         let mut bufs = vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE];
         let mut sizes = vec![0usize; IDEAL_BATCH_SIZE];
@@ -161,7 +161,7 @@ impl Gateway {
     }
 
     #[cfg(not(target_os = "linux"))]
-    async fn run_packet_loop(&self, dev: Arc<AsyncDevice>, packet_tx: Sender<Bytes>) {
+    async fn run_packet_loop(&self, dev: Arc<AsyncDevice>, packet_tx: Sender<BytesMut>) {
         let mut buf = BytesMut::zeroed(65536);
         while let Ok(len) = dev.recv(&mut buf).await {
             let mut ipv4 = match MutableIpv4Packet::new(&mut buf[..len]) {
@@ -280,7 +280,7 @@ impl Gateway {
 
     async fn handle_icmp_v4(
         &self,
-        packet_tx: Sender<Bytes>,
+        packet_tx: Sender<BytesMut>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
         let src = v4.get_source();
@@ -305,7 +305,7 @@ impl Gateway {
                 v4.set_payload(&payload);
                 v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
-                let _ = packet_tx.try_send(Bytes::copy_from_slice(v4.packet()));
+                let _ = packet_tx.try_send(BytesMut::from(v4.packet()));
             }
             _ => {
                 debug!("Ignoring ICMP type: {:?}", icmp_type);
@@ -315,7 +315,7 @@ impl Gateway {
 
     async fn handle_udp_v4(
         &self,
-        packet_tx: Sender<Bytes>,
+        packet_tx: Sender<BytesMut>,
         v4: &mut MutableIpv4Packet<'_>,
     ) -> Result<(), Error> {
         let mut payload = v4.payload().to_vec();
@@ -359,7 +359,7 @@ impl Gateway {
             p.set_payload(payload);
             p.set_checksum(ipv4::checksum(&p.to_immutable()));
 
-            let _ = packet_tx.try_send(Bytes::copy_from_slice(p.packet()));
+            let _ = packet_tx.try_send(buf);
         }
 
         let session = self.udp_nat.create(src, src_port, dst, dst_port).await?;
@@ -406,7 +406,7 @@ impl Gateway {
                 ip_packet.set_payload(udp_packet.packet());
                 ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
 
-                let _ = packet_tx.try_send(Bytes::copy_from_slice(ip_packet.packet()));
+                let _ = packet_tx.try_send(ip_buf);
             }
         };
 
@@ -416,7 +416,7 @@ impl Gateway {
 
     async fn handle_tcp_v4(
         &self,
-        packet_tx: Sender<Bytes>,
+        packet_tx: Sender<BytesMut>,
         v4: &mut MutableIpv4Packet<'_>,
     ) -> Result<(), Error> {
         let mut payload = v4.payload().to_vec();
@@ -462,7 +462,7 @@ impl Gateway {
         v4.set_payload(packet.packet());
         v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
-        let _ = packet_tx.try_send(Bytes::copy_from_slice(v4.packet()));
+        let _ = packet_tx.try_send(BytesMut::from(v4.packet()));
         Ok(())
     }
 }
