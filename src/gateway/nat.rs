@@ -22,7 +22,7 @@ pub struct SessionKey {
 const EPHEMERAL_PORT_START: u16 = 1024;
 const EPHEMERAL_PORT_END: u16 = 65535;
 const EPHEMERAL_PORT_RANGE: u16 = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
-const BITMAP_WORDS: usize = (EPHEMERAL_PORT_RANGE as usize + 63) / 64;
+const BITMAP_WORDS: usize = (EPHEMERAL_PORT_RANGE as usize).div_ceil(64);
 
 pub struct Nat {
     cache: Cache<SessionKey, Session>,
