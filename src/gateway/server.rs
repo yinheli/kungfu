@@ -20,9 +20,12 @@ use std::{
 };
 use tokio::{
     join,
-    sync::mpsc::{self, UnboundedSender},
+    sync::mpsc::{self, Sender},
 };
 use tun_rs::{AsyncDevice, DeviceBuilder};
+
+#[cfg(target_os = "linux")]
+use tun_rs::{IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
 use super::{
     nat::{Nat, Type},
@@ -59,7 +62,7 @@ impl Gateway {
             .expect("Failed to get local address")
             .port();
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         let tcp_nat = Arc::new(Nat::new(Type::Tcp, None));
         let udp_nat = Arc::new(Nat::new(Type::Udp, Some(tx)));
         let udp_relay = UdpRelay::new(runtime.clone(), rx);
@@ -79,42 +82,110 @@ impl Gateway {
 
     async fn serve(&self) {
         let dev = Arc::new(self.setup().await);
-        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (packet_tx, mut packet_rx) = mpsc::channel::<BytesMut>(4096);
 
         let write_task = async {
             let dev = dev.clone();
             while let Some(packet) = packet_rx.recv().await {
-                let _ = dev.send(&packet).await;
+                self.send_packet(&dev, &packet).await;
             }
         };
 
         let handle_task = async {
             let dev = dev.clone();
-            let mut buf = BytesMut::zeroed(65536);
-            while let Ok(len) = dev.recv(&mut buf).await {
-                let packet_tx = packet_tx.clone();
-                let mut ipv4 = ipv4::MutableIpv4Packet::new(&mut buf[..len]).unwrap();
-                let protocol = ipv4.get_next_level_protocol();
-                let handle_result = match protocol {
-                    IpNextHeaderProtocols::Icmp => {
-                        self.handle_icmp_v4(packet_tx.clone(), &mut ipv4).await;
-                        Ok(())
-                    }
-                    IpNextHeaderProtocols::Udp => {
-                        self.handle_udp_v4(packet_tx.clone(), &mut ipv4).await
-                    }
-                    IpNextHeaderProtocols::Tcp => {
-                        self.handle_tcp_v4(packet_tx.clone(), &mut ipv4).await
-                    }
-                    _ => Ok(()),
-                };
-                if let Err(e) = handle_result {
-                    error!("Failed to handle packet: {}", e);
-                }
-            }
+            self.run_packet_loop(dev, packet_tx.clone()).await;
         };
 
         join!(write_task, handle_task);
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn send_packet(&self, dev: &AsyncDevice, packet: &BytesMut) {
+        let mut out = BytesMut::with_capacity(VIRTIO_NET_HDR_LEN + packet.len());
+        out.extend_from_slice(&[0u8; VIRTIO_NET_HDR_LEN]);
+        out.extend_from_slice(packet);
+        let _ = dev.send(&out).await;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn send_packet(&self, dev: &AsyncDevice, packet: &BytesMut) {
+        let _ = dev.send(packet).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn run_packet_loop(&self, dev: Arc<AsyncDevice>, packet_tx: Sender<BytesMut>) {
+        let mut original_buffer = vec![0u8; VIRTIO_NET_HDR_LEN + 65535];
+        let mut bufs = vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE];
+        let mut sizes = vec![0usize; IDEAL_BATCH_SIZE];
+
+        loop {
+            match dev
+                .recv_multiple(&mut original_buffer, &mut bufs, &mut sizes, 0)
+                .await
+            {
+                Ok(count) => {
+                    for i in 0..count {
+                        let len = sizes[i];
+                        if len == 0 {
+                            continue;
+                        }
+                        let mut ipv4 = match MutableIpv4Packet::new(&mut bufs[i][..len]) {
+                            Some(p) => p,
+                            None => continue,
+                        };
+                        let protocol = ipv4.get_next_level_protocol();
+                        let handle_result = match protocol {
+                            IpNextHeaderProtocols::Icmp => {
+                                self.handle_icmp_v4(packet_tx.clone(), &mut ipv4)
+                                    .await;
+                                Ok(())
+                            }
+                            IpNextHeaderProtocols::Udp => {
+                                self.handle_udp_v4(packet_tx.clone(), &mut ipv4).await
+                            }
+                            IpNextHeaderProtocols::Tcp => {
+                                self.handle_tcp_v4(packet_tx.clone(), &mut ipv4).await
+                            }
+                            _ => Ok(()),
+                        };
+                        if let Err(e) = handle_result {
+                            error!("Failed to handle packet: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("recv_multiple error: {}", e);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn run_packet_loop(&self, dev: Arc<AsyncDevice>, packet_tx: Sender<BytesMut>) {
+        let mut buf = BytesMut::zeroed(65536);
+        while let Ok(len) = dev.recv(&mut buf).await {
+            let mut ipv4 = match MutableIpv4Packet::new(&mut buf[..len]) {
+                Some(p) => p,
+                None => continue,
+            };
+            let protocol = ipv4.get_next_level_protocol();
+            let handle_result = match protocol {
+                IpNextHeaderProtocols::Icmp => {
+                    self.handle_icmp_v4(packet_tx.clone(), &mut ipv4).await;
+                    Ok(())
+                }
+                IpNextHeaderProtocols::Udp => {
+                    self.handle_udp_v4(packet_tx.clone(), &mut ipv4).await
+                }
+                IpNextHeaderProtocols::Tcp => {
+                    self.handle_tcp_v4(packet_tx.clone(), &mut ipv4).await
+                }
+                _ => Ok(()),
+            };
+            if let Err(e) = handle_result {
+                error!("Failed to handle packet: {}", e);
+            }
+        }
     }
 
     async fn setup(&self) -> AsyncDevice {
@@ -132,6 +203,8 @@ impl Gateway {
         {
             builder = builder.name("kf0");
             builder = builder.tx_queue_len(1000);
+            builder = builder.offload(true);
+            builder = builder.multi_queue(true);
         }
 
         let dev = match builder.build_async() {
@@ -207,7 +280,7 @@ impl Gateway {
 
     async fn handle_icmp_v4(
         &self,
-        packet_tx: UnboundedSender<Bytes>,
+        packet_tx: Sender<BytesMut>,
         v4: &mut MutableIpv4Packet<'_>,
     ) {
         let src = v4.get_source();
@@ -232,7 +305,7 @@ impl Gateway {
                 v4.set_payload(&payload);
                 v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
-                let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
+                let _ = packet_tx.try_send(BytesMut::from(v4.packet()));
             }
             _ => {
                 debug!("Ignoring ICMP type: {:?}", icmp_type);
@@ -242,7 +315,7 @@ impl Gateway {
 
     async fn handle_udp_v4(
         &self,
-        packet_tx: UnboundedSender<Bytes>,
+        packet_tx: Sender<BytesMut>,
         v4: &mut MutableIpv4Packet<'_>,
     ) -> Result<(), Error> {
         let mut payload = v4.payload().to_vec();
@@ -286,7 +359,7 @@ impl Gateway {
             p.set_payload(payload);
             p.set_checksum(ipv4::checksum(&p.to_immutable()));
 
-            let _ = packet_tx.send(Bytes::copy_from_slice(p.packet()));
+            let _ = packet_tx.try_send(buf);
         }
 
         let session = self.udp_nat.create(src, src_port, dst, dst_port).await?;
@@ -333,7 +406,7 @@ impl Gateway {
                 ip_packet.set_payload(udp_packet.packet());
                 ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
 
-                let _ = packet_tx.send(Bytes::copy_from_slice(ip_packet.packet()));
+                let _ = packet_tx.try_send(ip_buf);
             }
         };
 
@@ -343,7 +416,7 @@ impl Gateway {
 
     async fn handle_tcp_v4(
         &self,
-        packet_tx: UnboundedSender<Bytes>,
+        packet_tx: Sender<BytesMut>,
         v4: &mut MutableIpv4Packet<'_>,
     ) -> Result<(), Error> {
         let mut payload = v4.payload().to_vec();
@@ -389,7 +462,7 @@ impl Gateway {
         v4.set_payload(packet.packet());
         v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
 
-        let _ = packet_tx.send(Bytes::copy_from_slice(v4.packet()));
+        let _ = packet_tx.try_send(BytesMut::from(v4.packet()));
         Ok(())
     }
 }
