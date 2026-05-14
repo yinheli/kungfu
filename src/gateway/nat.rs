@@ -9,7 +9,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionKey {
@@ -47,7 +47,7 @@ pub struct Session {
 }
 
 impl Nat {
-    pub fn new(nat_type: Type, tx: Option<UnboundedSender<u16>>) -> Self {
+    pub fn new(nat_type: Type, tx: Option<Sender<u16>>) -> Self {
         let ttl = match nat_type {
             Type::Tcp => Duration::from_secs(300),
             Type::Udp => Duration::from_secs(60),
@@ -175,7 +175,7 @@ impl Nat {
         key_to_session: DashMap<SessionKey, Session>,
         port_to_key: DashMap<u16, SessionKey>,
         bitmap: Arc<[AtomicU64; BITMAP_WORDS]>,
-        tx: Option<UnboundedSender<u16>>,
+        tx: Option<Sender<u16>>,
     ) -> Cache<SessionKey, Session> {
         Cache::builder()
             .max_capacity(10000)
@@ -191,7 +191,7 @@ impl Nat {
                     let bit = offset as usize % 64;
                     bitmap[word].fetch_and(!(1u64 << bit), Ordering::Release);
                     if let Some(ref tx) = tx {
-                        let _ = tx.send(session.nat_port);
+                        let _ = tx.try_send(session.nat_port);
                     }
                 }
             })

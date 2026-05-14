@@ -15,7 +15,7 @@ use moka::sync::Cache;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
-    sync::{Mutex, Notify, mpsc::UnboundedReceiver},
+    sync::{Mutex, Notify, mpsc::Receiver},
     time::timeout,
 };
 
@@ -314,7 +314,7 @@ pub(crate) struct UdpRelay {
 }
 
 impl UdpRelay {
-    pub fn new(runtime: ArcRuntime, mut rx: UnboundedReceiver<u16>) -> Self {
+    pub fn new(runtime: ArcRuntime, mut rx: Receiver<u16>) -> Self {
         let associations: Cache<u16, Arc<UdpAssociation>> = Cache::builder()
             .max_capacity(UDP_ASSOCIATION_MAX_CAPACITY)
             .time_to_idle(UDP_ASSOCIATION_TTL)
