@@ -24,6 +24,9 @@ use tokio::{
 };
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
+#[cfg(target_os = "linux")]
+use tun_rs::{IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
+
 use super::{
     nat::{Nat, Type},
     relay_udp::UdpRelay,
@@ -84,37 +87,105 @@ impl Gateway {
         let write_task = async {
             let dev = dev.clone();
             while let Some(packet) = packet_rx.recv().await {
-                let _ = dev.send(&packet).await;
+                self.send_packet(&dev, &packet).await;
             }
         };
 
         let handle_task = async {
             let dev = dev.clone();
-            let mut buf = BytesMut::zeroed(65536);
-            while let Ok(len) = dev.recv(&mut buf).await {
-                let packet_tx = packet_tx.clone();
-                let mut ipv4 = ipv4::MutableIpv4Packet::new(&mut buf[..len]).unwrap();
-                let protocol = ipv4.get_next_level_protocol();
-                let handle_result = match protocol {
-                    IpNextHeaderProtocols::Icmp => {
-                        self.handle_icmp_v4(packet_tx.clone(), &mut ipv4).await;
-                        Ok(())
-                    }
-                    IpNextHeaderProtocols::Udp => {
-                        self.handle_udp_v4(packet_tx.clone(), &mut ipv4).await
-                    }
-                    IpNextHeaderProtocols::Tcp => {
-                        self.handle_tcp_v4(packet_tx.clone(), &mut ipv4).await
-                    }
-                    _ => Ok(()),
-                };
-                if let Err(e) = handle_result {
-                    error!("Failed to handle packet: {}", e);
-                }
-            }
+            self.run_packet_loop(dev, packet_tx.clone()).await;
         };
 
         join!(write_task, handle_task);
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn send_packet(&self, dev: &AsyncDevice, packet: &[u8]) {
+        let mut out = BytesMut::with_capacity(VIRTIO_NET_HDR_LEN + packet.len());
+        out.extend_from_slice(&[0u8; VIRTIO_NET_HDR_LEN]);
+        out.extend_from_slice(packet);
+        let _ = dev.send(&out).await;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn send_packet(&self, dev: &AsyncDevice, packet: &[u8]) {
+        let _ = dev.send(packet).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn run_packet_loop(&self, dev: Arc<AsyncDevice>, packet_tx: UnboundedSender<Bytes>) {
+        let mut original_buffer = vec![0u8; VIRTIO_NET_HDR_LEN + 65535];
+        let mut bufs = vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE];
+        let mut sizes = vec![0usize; IDEAL_BATCH_SIZE];
+
+        loop {
+            match dev
+                .recv_multiple(&mut original_buffer, &mut bufs, &mut sizes, 0)
+                .await
+            {
+                Ok(count) => {
+                    for i in 0..count {
+                        let len = sizes[i];
+                        if len == 0 {
+                            continue;
+                        }
+                        let mut ipv4 = match MutableIpv4Packet::new(&mut bufs[i][..len]) {
+                            Some(p) => p,
+                            None => continue,
+                        };
+                        let protocol = ipv4.get_next_level_protocol();
+                        let handle_result = match protocol {
+                            IpNextHeaderProtocols::Icmp => {
+                                self.handle_icmp_v4(packet_tx.clone(), &mut ipv4)
+                                    .await;
+                                Ok(())
+                            }
+                            IpNextHeaderProtocols::Udp => {
+                                self.handle_udp_v4(packet_tx.clone(), &mut ipv4).await
+                            }
+                            IpNextHeaderProtocols::Tcp => {
+                                self.handle_tcp_v4(packet_tx.clone(), &mut ipv4).await
+                            }
+                            _ => Ok(()),
+                        };
+                        if let Err(e) = handle_result {
+                            error!("Failed to handle packet: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("recv_multiple error: {}", e);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn run_packet_loop(&self, dev: Arc<AsyncDevice>, packet_tx: UnboundedSender<Bytes>) {
+        let mut buf = BytesMut::zeroed(65536);
+        while let Ok(len) = dev.recv(&mut buf).await {
+            let mut ipv4 = match MutableIpv4Packet::new(&mut buf[..len]) {
+                Some(p) => p,
+                None => continue,
+            };
+            let protocol = ipv4.get_next_level_protocol();
+            let handle_result = match protocol {
+                IpNextHeaderProtocols::Icmp => {
+                    self.handle_icmp_v4(packet_tx.clone(), &mut ipv4).await;
+                    Ok(())
+                }
+                IpNextHeaderProtocols::Udp => {
+                    self.handle_udp_v4(packet_tx.clone(), &mut ipv4).await
+                }
+                IpNextHeaderProtocols::Tcp => {
+                    self.handle_tcp_v4(packet_tx.clone(), &mut ipv4).await
+                }
+                _ => Ok(()),
+            };
+            if let Err(e) = handle_result {
+                error!("Failed to handle packet: {}", e);
+            }
+        }
     }
 
     async fn setup(&self) -> AsyncDevice {
@@ -132,6 +203,8 @@ impl Gateway {
         {
             builder = builder.name("kf0");
             builder = builder.tx_queue_len(1000);
+            builder = builder.offload(true);
+            builder = builder.multi_queue(true);
         }
 
         let dev = match builder.build_async() {
