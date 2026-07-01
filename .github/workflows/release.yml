@@ -74,7 +74,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup | Rust
         uses: dtolnay/rust-toolchain@nightly
@@ -114,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # Required for git-cliff to analyze full history
 
@@ -160,7 +160,7 @@ jobs:
     name: Publish Crates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - name: Publish | crates.io
         uses: katyo/publish-crates@v2
@@ -172,7 +172,7 @@ jobs:
     name: Publish Docker
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
         with:
           platforms: linux/amd64,linux/arm64
