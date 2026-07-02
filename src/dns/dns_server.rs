@@ -15,7 +15,7 @@ use hickory_server::{
         ZoneHandler, ZoneType,
     },
 };
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::{sync::Arc, time::Duration};
 use tokio::{
     net::{TcpListener, UdpSocket},
@@ -33,23 +33,7 @@ fn make_connection_configs(port: u16) -> Vec<ConnectionConfig> {
     vec![udp, tcp]
 }
 
-pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<Server<Handler>, Error> {
-    let mut name_servers = Vec::new();
-    for upstream in runtime.setting.dns_upstream.iter() {
-        let mut upstream = upstream.clone();
-        if !upstream.contains(':') {
-            upstream.push_str(":53")
-        }
-
-        if let Ok(addrs) = &upstream[..].to_socket_addrs() {
-            addrs.clone().for_each(|addr| {
-                let mut ns = NameServerConfig::udp_and_tcp(addr.ip());
-                ns.connections = make_connection_configs(addr.port());
-                name_servers.push(ns);
-            });
-        }
-    }
-
+fn resolver_opts() -> ResolverOpts {
     let mut opts = ResolverOpts::default();
     opts.attempts = 1;
     opts.use_hosts_file = ResolveHosts::Never;
@@ -59,17 +43,176 @@ pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<Server<Handl
     opts.timeout = Duration::from_secs(2);
     opts.positive_max_ttl = Some(Duration::from_secs(120));
     opts.negative_max_ttl = Some(Duration::from_secs(120));
+    opts
+}
+
+fn build_forward_handler(addr: SocketAddr) -> Result<Arc<dyn ZoneHandler>, Error> {
+    let mut ns = NameServerConfig::udp_and_tcp(addr.ip());
+    ns.connections = make_connection_configs(addr.port());
 
     let forward_config = ForwardConfig {
-        name_servers,
-        options: Some(opts),
+        name_servers: vec![ns],
+        options: Some(resolver_opts()),
     };
 
     let upstream = ForwardZoneHandler::builder_tokio(forward_config)
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build forward authority: {}", e))?;
 
-    let upstream: Arc<dyn ZoneHandler> = Arc::new(upstream);
+    Ok(Arc::new(upstream))
+}
+
+fn build_upstream_handlers(upstreams: &[String]) -> Result<Vec<Arc<dyn ZoneHandler>>, Error> {
+    let mut handlers: Vec<Arc<dyn ZoneHandler>> = Vec::new();
+
+    for upstream in upstreams.iter() {
+        let mut upstream = upstream.clone();
+        if !upstream.contains(':') {
+            upstream.push_str(":53")
+        }
+
+        if let Ok(addrs) = &upstream[..].to_socket_addrs() {
+            for addr in addrs.clone() {
+                handlers.push(build_forward_handler(addr)?);
+            }
+        }
+    }
+
+    if handlers.is_empty() {
+        return Err(anyhow::anyhow!("no valid dns upstreams configured"));
+    }
+
+    Ok(handlers)
+}
+
+fn should_try_next_upstream(result: &LookupControlFlow<AuthLookup>) -> bool {
+    match result {
+        LookupControlFlow::Skip => true,
+        LookupControlFlow::Continue(Err(error)) | LookupControlFlow::Break(Err(error)) => {
+            is_retryable_lookup_error(error)
+        }
+        _ => false,
+    }
+}
+
+fn is_retryable_lookup_error(error: &LookupError) -> bool {
+    if error.is_nx_domain() || error.is_no_records_found() {
+        return false;
+    }
+
+    !matches!(error, LookupError::NameExists)
+}
+
+struct SequentialUpstreams {
+    handlers: Vec<Arc<dyn ZoneHandler>>,
+}
+
+impl SequentialUpstreams {
+    fn new(handlers: Vec<Arc<dyn ZoneHandler>>) -> Self {
+        Self { handlers }
+    }
+
+    fn first(&self) -> &dyn ZoneHandler {
+        self.handlers
+            .first()
+            .expect("SequentialUpstreams requires at least one handler")
+            .as_ref()
+    }
+}
+
+#[async_trait::async_trait]
+impl ZoneHandler for SequentialUpstreams {
+    fn zone_type(&self) -> ZoneType {
+        self.first().zone_type()
+    }
+
+    fn axfr_policy(&self) -> AxfrPolicy {
+        self.first().axfr_policy()
+    }
+
+    fn can_validate_dnssec(&self) -> bool {
+        self.first().can_validate_dnssec()
+    }
+
+    fn origin(&self) -> &LowerName {
+        self.first().origin()
+    }
+
+    async fn update(
+        &self,
+        update: &Request,
+        now: u64,
+    ) -> (Result<bool, ResponseCode>, Option<TSigResponseContext>) {
+        self.first().update(update, now).await
+    }
+
+    async fn lookup(
+        &self,
+        name: &LowerName,
+        rtype: hickory_server::proto::rr::RecordType,
+        request_info: Option<&RequestInfo<'_>>,
+        lookup_options: LookupOptions,
+    ) -> LookupControlFlow<AuthLookup> {
+        let mut last_result = LookupControlFlow::Skip;
+
+        for handler in &self.handlers {
+            let result = handler
+                .lookup(name, rtype, request_info, lookup_options)
+                .await;
+            if !should_try_next_upstream(&result) {
+                return result;
+            }
+            last_result = result;
+        }
+
+        last_result
+    }
+
+    async fn search(
+        &self,
+        request: &Request,
+        lookup_options: LookupOptions,
+    ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
+        let mut last_result = (LookupControlFlow::Skip, None);
+
+        for handler in &self.handlers {
+            let result = handler.search(request, lookup_options).await;
+            if !should_try_next_upstream(&result.0) {
+                return result;
+            }
+            last_result = result;
+        }
+
+        last_result
+    }
+
+    async fn nsec_records(
+        &self,
+        name: &LowerName,
+        lookup_options: LookupOptions,
+    ) -> LookupControlFlow<AuthLookup> {
+        let mut last_result = LookupControlFlow::Skip;
+
+        for handler in &self.handlers {
+            let result = handler.nsec_records(name, lookup_options).await;
+            if !should_try_next_upstream(&result) {
+                return result;
+            }
+            last_result = result;
+        }
+
+        last_result
+    }
+}
+
+pub(crate) async fn build_dns_server(runtime: ArcRuntime) -> Result<Server<Handler>, Error> {
+    let mut upstream_handlers = build_upstream_handlers(&runtime.setting.dns_upstream)?;
+    let upstream: Arc<dyn ZoneHandler> = if upstream_handlers.len() == 1 {
+        upstream_handlers.remove(0)
+    } else {
+        Arc::new(SequentialUpstreams::new(upstream_handlers))
+    };
+
     let handler = DnsHandler::new(runtime.clone(), upstream.clone());
     let authority = HijackAuthority::new(upstream.clone(), handler);
 
@@ -201,5 +344,139 @@ impl RequestHandler for Handler {
         self.catalog
             .lookup(request, None, now, response_handle)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hickory_server::proto::rr::RecordType;
+    use hickory_server::zone_handler::LookupError;
+    use std::io;
+    use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    enum MockOutcome {
+        Empty,
+        NxDomain,
+        Io,
+    }
+
+    struct MockHandler {
+        origin: LowerName,
+        calls: Arc<AtomicUsize>,
+        outcome: MockOutcome,
+    }
+
+    impl MockHandler {
+        fn new(outcome: MockOutcome) -> (Arc<Self>, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            (
+                Arc::new(Self {
+                    origin: LowerName::from(Name::root()),
+                    calls: Arc::clone(&calls),
+                    outcome,
+                }),
+                calls,
+            )
+        }
+
+        fn outcome(&self) -> LookupControlFlow<AuthLookup> {
+            match self.outcome {
+                MockOutcome::Empty => LookupControlFlow::Continue(Ok(AuthLookup::default())),
+                MockOutcome::NxDomain => {
+                    LookupControlFlow::Continue(Err(LookupError::from(ResponseCode::NXDomain)))
+                }
+                MockOutcome::Io => LookupControlFlow::Continue(Err(LookupError::from(
+                    io::Error::other("primary unavailable"),
+                ))),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ZoneHandler for MockHandler {
+        fn zone_type(&self) -> ZoneType {
+            ZoneType::External
+        }
+
+        fn axfr_policy(&self) -> AxfrPolicy {
+            AxfrPolicy::Deny
+        }
+
+        fn origin(&self) -> &LowerName {
+            &self.origin
+        }
+
+        async fn lookup(
+            &self,
+            _name: &LowerName,
+            _rtype: RecordType,
+            _request_info: Option<&RequestInfo<'_>>,
+            _lookup_options: LookupOptions,
+        ) -> LookupControlFlow<AuthLookup> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.outcome()
+        }
+
+        async fn search(
+            &self,
+            _request: &Request,
+            _lookup_options: LookupOptions,
+        ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            (self.outcome(), None)
+        }
+
+        async fn nsec_records(
+            &self,
+            _name: &LowerName,
+            _lookup_options: LookupOptions,
+        ) -> LookupControlFlow<AuthLookup> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.outcome()
+        }
+    }
+
+    fn query_name() -> LowerName {
+        LowerName::new(&Name::from_str("example.com.").unwrap())
+    }
+
+    #[tokio::test]
+    async fn does_not_query_backup_after_dns_negative_response() {
+        let (primary, primary_calls) = MockHandler::new(MockOutcome::NxDomain);
+        let (backup, backup_calls) = MockHandler::new(MockOutcome::Empty);
+        let upstreams = SequentialUpstreams::new(vec![primary, backup]);
+
+        let result = upstreams
+            .lookup(
+                &query_name(),
+                RecordType::AAAA,
+                None,
+                LookupOptions::default(),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            LookupControlFlow::Continue(Err(ref error)) if error.is_nx_domain()
+        ));
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backup_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn queries_backup_after_primary_transport_error() {
+        let (primary, primary_calls) = MockHandler::new(MockOutcome::Io);
+        let (backup, backup_calls) = MockHandler::new(MockOutcome::Empty);
+        let upstreams = SequentialUpstreams::new(vec![primary, backup]);
+
+        let result = upstreams
+            .lookup(&query_name(), RecordType::A, None, LookupOptions::default())
+            .await;
+
+        assert!(matches!(result, LookupControlFlow::Continue(Ok(_))));
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backup_calls.load(Ordering::SeqCst), 1);
     }
 }
