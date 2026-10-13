@@ -85,7 +85,7 @@ fn config_path(file: &str) -> PathBuf {
 }
 
 fn load_settings(path: &PathBuf) -> Result<Setting, Error> {
-    let setting: Setting = serde_yaml::from_str(fs::read_to_string(path).unwrap().as_str())?;
+    let setting: Setting = yaml_serde::from_str(fs::read_to_string(path).unwrap().as_str())?;
 
     Ok(setting)
 }
@@ -137,7 +137,7 @@ fn load_all_rule_configs(rules_dir: PathBuf) -> Result<Vec<RuleConfig>, Error> {
 fn load_rule_config_file(rule_file: PathBuf) -> Result<Option<Vec<RuleConfig>>, Error> {
     debug!("load rule file: {:?}", &rule_file);
     let configs: Option<Vec<RuleConfig>> =
-        serde_yaml::from_str(fs::read_to_string(rule_file).unwrap().as_str()).unwrap();
+        yaml_serde::from_str(fs::read_to_string(rule_file).unwrap().as_str()).unwrap();
 
     Ok(configs)
 }
