@@ -7,9 +7,9 @@ permissions:
 jobs:
   spelling:
     name: Spell Check with Typos
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout Actions Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Spell Check Repo
-        uses: crate-ci/typos@master
+        uses: crate-ci/typos@v1.51.1

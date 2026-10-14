@@ -29,31 +29,31 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-26.04
 
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-26.04
 
           - target: i686-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-26.04
 
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-26.04
 
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-26.04
 
           - target: arm-unknown-linux-musleabi
-            os: ubuntu-latest
+            os: ubuntu-26.04
 
           - target: armv7-unknown-linux-musleabi
-            os: ubuntu-latest
+            os: ubuntu-26.04
 
           # - target: mips-unknown-linux-musl
-          #   os: ubuntu-latest
+          #   os: ubuntu-26.04
 
           # - target: mipsel-unknown-linux-musl
-          #   os: ubuntu-latest
+          #   os: ubuntu-26.04
 
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -65,28 +65,35 @@ jobs:
     continue-on-error: true
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup | Rust
         uses: dtolnay/rust-toolchain@nightly
         with:
           target: ${{ matrix.target }}
 
+      - name: Install cross
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
       - name: Test
         run: cargo test --benches -- --nocapture
 
+      - name: Build | Build (cross)
+        if: runner.os == 'Linux'
+        run: cross build --release --locked --target ${{ matrix.target }}
+
       - name: Build | Build
-        uses: actions-rs/cargo@v1.0.3
-        with:
-          command: build
-          args: --release --locked --target ${{ matrix.target }}
-          use-cross: ${{ matrix.os == 'ubuntu-latest' }}
+        if: runner.os != 'Linux'
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
   docker_build:
     name: Docker build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
         with:
           platforms: linux/amd64,linux/arm64
