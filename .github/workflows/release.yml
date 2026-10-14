@@ -22,39 +22,39 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-26.04
             name: kungfu-x86_64-unknown-linux-gnu.tar.gz
 
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-26.04
             name: kungfu-x86_64-unknown-linux-musl.tar.gz
 
           - target: i686-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-26.04
             name: kungfu-i686-unknown-linux-musl.tar.gz
 
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-26.04
             name: kungfu-aarch64-unknown-linux-gnu.tar.gz
 
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-26.04
             name: kungfu-aarch64-unknown-linux-musl.tar.gz
 
           - target: arm-unknown-linux-musleabi
-            os: ubuntu-latest
+            os: ubuntu-26.04
             name: kungfu-arm-unknown-linux-musleabi.tar.gz
 
           - target: armv7-unknown-linux-musleabi
-            os: ubuntu-latest
+            os: ubuntu-26.04
             name: kungfu-armv7-unknown-linux-musleabi.tar.gz
 
           # - target: mips-unknown-linux-musl
-          #   os: ubuntu-latest
+          #   os: ubuntu-26.04
           #   name: kungfu-mips-unknown-linux-musl.tar.gz
 
           # - target: mipsel-unknown-linux-musl
-          #   os: ubuntu-latest
+          #   os: ubuntu-26.04
           #   name: kungfu-mipsel-unknown-linux-musl.tar.gz
 
           - target: x86_64-apple-darwin
@@ -74,19 +74,26 @@ jobs:
     continue-on-error: true
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup | Rust
         uses: dtolnay/rust-toolchain@nightly
         with:
           target: ${{ matrix.target }}
 
-      - name: Build | Build
-        uses: actions-rs/cargo@v1
+      - name: Install cross
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
         with:
-          command: build
-          args: --release --locked --target ${{ matrix.target }}
-          use-cross: ${{ matrix.os == 'ubuntu-latest' }}
+          tool: cross
+
+      - name: Build | Build (cross)
+        if: runner.os == 'Linux'
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Build | Build
+        if: runner.os != 'Linux'
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Post Build | Prepare artifacts [Windows]
         if: matrix.os == 'windows-latest'
@@ -111,10 +118,10 @@ jobs:
   upload_artifacts:
     name: Add Build Artifacts to Release
     needs: [github_build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Setup | Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # Required for git-cliff to analyze full history
 
@@ -158,9 +165,9 @@ jobs:
 
   publish_crates:
     name: Publish Crates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - name: Publish | crates.io
         uses: katyo/publish-crates@v2
@@ -170,9 +177,9 @@ jobs:
 
   publish_docker:
     name: Publish Docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
         with:
           platforms: linux/amd64,linux/arm64
